@@ -1,0 +1,27 @@
+# Vivado generated files
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+
+# Logs
+vivado.log
+vivado.jou
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# MNIST raw dataset files (too large for GitHub)
+python_files/data/
+python_files/MNIST/
+
+# OS junk
+.DS_Store
+Thumbs.db

@@ -7,7 +7,7 @@ module ReLu #(parameter BITS, COUNTER_END, B_BITS)
   input reg [31:0] counter,
   input reg signed [BITS+24:0] mult_sum_in,
   input reg signed [B_BITS:0] b,
-  output reg signed [BITS+24:0] neuron_out
+  output reg signed [BITS+8:0] neuron_out   // Matches neuron_inputlayer data_out width
 );
 
  

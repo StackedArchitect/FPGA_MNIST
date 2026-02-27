@@ -970,16 +970,16 @@ assign cur_kc = tap_counter % KERNEL_W;                             // tap%3  �
 **Example trace for `pos_counter = 0` (output position [0][0]):**
 
 | tap_counter | cur_ch | cur_kr | cur_kc | data_idx | input value | weight | product |
-|:-----------:|:------:|:------:|:------:|:--------:|:-----------:|:------:|:-------:|
-| 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| 1 | 0 | 0 | 1 | 1 | 2 | 0 | 0 |
-| 2 | 0 | 0 | 2 | 2 | 3 | -1 | -3 |
-| 3 | 0 | 1 | 0 | 4 | 5 | 0 | 0 |
-| 4 | 0 | 1 | 1 | 5 | 6 | 1 | 6 |
-| 5 | 0 | 1 | 2 | 6 | 7 | 0 | 0 |
-| 6 | 0 | 2 | 0 | 8 | 9 | -1 | -9 |
-| 7 | 0 | 2 | 1 | 9 | 10 | 0 | 0 |
-| 8 | 0 | 2 | 2 | 10 | 11 | 1 | 11 |
+| :---------: | :----: | :----: | :----: | :------: | :---------: | :----: | :-----: |
+|      0      |   0    |   0    |   0    |    0     |      1      |   1    |    1    |
+|      1      |   0    |   0    |   1    |    1     |      2      |   0    |    0    |
+|      2      |   0    |   0    |   2    |    2     |      3      |   -1   |   -3    |
+|      3      |   0    |   1    |   0    |    4     |      5      |   0    |    0    |
+|      4      |   0    |   1    |   1    |    5     |      6      |   1    |    6    |
+|      5      |   0    |   1    |   2    |    6     |      7      |   0    |    0    |
+|      6      |   0    |   2    |   0    |    8     |      9      |   -1   |   -9    |
+|      7      |   0    |   2    |   1    |    9     |     10      |   0    |    0    |
+|      8      |   0    |   2    |   2    |    10    |     11      |   1    |   11    |
 
 Accumulated sum = 1+0−3+0+6+0−9+0+11 = **6**. After adding bias (2): **out[0][0] = 8**.
 
@@ -1009,6 +1009,7 @@ endgenerate
 ```
 
 If we had 4 filters, on the same clock cycle where `tap_counter=4`, all 4 filters would read:
+
 - Filter 0: `weights[0×9+4] = weights[4]`
 - Filter 1: `weights[1×9+4] = weights[13]`
 - Filter 2: `weights[2×9+4] = weights[22]`
@@ -1031,6 +1032,7 @@ endgenerate
 **Why `>>> 16`?** Both operands are Q16.16, so their product is Q32.32 (the fractional part doubled to 32 bits). The arithmetic right-shift by 16 brings it back to Q16.16 scale. Without this, the accumulator would be 65536× too large and the bias addition would be meaningless.
 
 **Example:** 6.0 × 1.0 in Q16.16:
+
 - `6.0` = `0x00060000` = 393216
 - `1.0` = `0x00010000` = 65536
 - Full product = 393216 × 65536 = 25,769,803,776 (Q32.32)
@@ -1082,15 +1084,16 @@ end
 **Full output for our example:**
 
 | pos_counter | out_row | out_col | MAC sum | +bias(2) | ReLU | data_out index |
-|:-----------:|:-------:|:-------:|:-------:|:--------:|:----:|:--------------:|
-| 0 | 0 | 0 | 6 | 8 | 8 | [0] |
-| 1 | 0 | 1 | 6 | 8 | 8 | [1] |
-| 2 | 1 | 0 | 6 | 8 | 8 | [2] |
-| 3 | 1 | 1 | 6 | 8 | 8 | [3] |
+| :---------: | :-----: | :-----: | :-----: | :------: | :--: | :------------: |
+|      0      |    0    |    0    |    6    |    8     |  8   |      [0]       |
+|      1      |    0    |    1    |    6    |    8     |  8   |      [1]       |
+|      2      |    1    |    0    |    6    |    8     |  8   |      [2]       |
+|      3      |    1    |    1    |    6    |    8     |  8   |      [3]       |
 
 **Total cycles:** 4 positions × (9 compute + 1 store) = **40 cycles** + 1 idle + 1 done.
 
 #### In the real design:
+
 - **Conv1:** 676 positions × (9+1) ≈ **6,760 cycles**
 - **Conv2:** 121 positions × (36+1) ≈ **4,477 cycles**
 
@@ -1162,11 +1165,11 @@ end
 **Trace for `pos_counter=0` (output [0][0]):**
 
 | Cycle | pool_counter | pool_r | pool_c | in_row | in_col | Ch0 value | Ch0 cur_max | Ch1 value | Ch1 cur_max |
-|:-----:|:------------:|:------:|:------:|:------:|:------:|:---------:|:-----------:|:---------:|:-----------:|
-| 1 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 8 | 8 |
-| 2 | 1 | 0 | 1 | 0 | 1 | 5 | 5 | 2 | 8 |
-| 3 | 2 | 1 | 0 | 1 | 0 | 2 | 5 | 1 | 8 |
-| 4 | 3 | 1 | 1 | 1 | 1 | **8** | **8** | **9** | **9** |
+| :---: | :----------: | :----: | :----: | :----: | :----: | :-------: | :---------: | :-------: | :---------: |
+|   1   |      0       |   0    |   0    |   0    |   0    |     1     |      1      |     8     |      8      |
+|   2   |      1       |   0    |   1    |   0    |   1    |     5     |      5      |     2     |      8      |
+|   3   |      2       |   1    |   0    |   1    |   0    |     2     |      5      |     1     |      8      |
+|   4   |      3       |   1    |   1    |   1    |   1    |   **8**   |    **8**    |   **9**   |    **9**    |
 
 After 4 compare cycles, `cur_max[0]=8`, `cur_max[1]=9` → exactly the expected output.
 
@@ -1193,6 +1196,7 @@ The reset value `{1'b1, {BITS{1'b0}}}` = `0x80000000` = −2,147,483,648 — the
 **Total cycles:** 4 positions × (4 compare + 1 store) = **20 cycles**.
 
 #### In the real design:
+
 - **Pool1:** 169 positions × (4+1) = **845 cycles**
 - **Pool2:** 25 positions × (4+1) = **125 cycles**
 
@@ -1276,6 +1280,7 @@ endmodule
 ```
 
 Each neuron has **two** register instances:
+
 - **RG_W:** Selects `weights[neuron_id][counter]` — this neuron's weight at the current tap
 - **RG_X:** Selects `data_in[counter]` — the shared input at the current tap
 
@@ -1305,6 +1310,7 @@ endmodule
 ```
 
 **Concrete example:** FC1 neuron 0, cycle 25 (i.e., 5th real data element):
+
 - `w = weights[0][25]` = say `0xFFFF1234` (some negative weight ≈ −0.93)
 - `x = data_in[25]` = say `0x0000C000` (some positive input = 0.75)
 - `full_product` = `0xFFFF1234` × `0x0000C000` = `0xFFFFFFFFA51A3000` (64-bit)
@@ -1363,6 +1369,7 @@ endmodule
 **Key behaviour:** The output stays 0 until `counter >= COUNTER_END` (= `WIDTH - 3`). This ensures the full MAC sum has settled before bias is added. The `- 3` accounts for pipeline latency through register → multiplier → adder.
 
 **Example:** FC1 neuron 5, after cycle 236:
+
 - `mult_sum_in` = 49152 (accumulated MAC sum = 0.75 in Q16.16)
 - `b[5]` = −16384 (bias = −0.25 in Q16.16)
 - `neuron_out` = 49152 + (−16384) = 32768 (= 0.5 in Q16.16)
@@ -1510,6 +1517,7 @@ endgenerate
 **Why padding?** The counter-based MAC in `layer.sv` starts at counter=0, but the actual data starts at index 20 in the weight array. The first 20 weights are zero, so the products for count 0–19 are zero. This avoids needing separate start/stop logic — the counter just runs from 0 to 239 and the padding naturally produces zero contributions at the boundaries.
 
 **Visualised:**
+
 ```
 fc1_in index:  0  1  2 ... 19 | 20  21  22 ... 219 | 220 221 ... 239
 fc1_in value:  0  0  0 ...  0 | p2[0] p2[1] ... p2[199] |   0   0  ...   0
@@ -1640,15 +1648,15 @@ always @(posedge dut.fc1_done)
 
 **Observed timing (10 ns clock period):**
 
-| Layer | Done Time | Cycles | Notes |
-|:------|----------:|-------:|:------|
-| Conv1 | 67,635 ns | ~6,763 | 676 positions × ~10 cycles each |
-| Pool1 | 76,105 ns | ~847 | 169 positions × ~5 cycles each |
-| Conv2 | 120,895 ns | ~4,479 | 121 positions × ~37 cycles each |
-| Pool2 | 122,165 ns | ~127 | 25 positions × ~5 cycles each |
-| FC1 | 124,535 ns | ~237 | Counter runs 0→236 |
-| FC2 | ~125,300 ns | ~69 | Counter runs 0→68 |
-| **Total** | **~125 µs** | **~12,500** | At 100 MHz clock |
+| Layer     |   Done Time |      Cycles | Notes                           |
+| :-------- | ----------: | ----------: | :------------------------------ |
+| Conv1     |   67,635 ns |      ~6,763 | 676 positions × ~10 cycles each |
+| Pool1     |   76,105 ns |        ~847 | 169 positions × ~5 cycles each  |
+| Conv2     |  120,895 ns |      ~4,479 | 121 positions × ~37 cycles each |
+| Pool2     |  122,165 ns |        ~127 | 25 positions × ~5 cycles each   |
+| FC1       |  124,535 ns |        ~237 | Counter runs 0→236              |
+| FC2       | ~125,300 ns |         ~69 | Counter runs 0→68               |
+| **Total** | **~125 µs** | **~12,500** | At 100 MHz clock                |
 
 ---
 

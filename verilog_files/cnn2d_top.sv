@@ -88,8 +88,8 @@ module cnn2d_top #(
     input  wire signed [31:0]       fc2_w       [0 : FC2_OUT - 1][0 : FC2_WIDTH],
     input  wire signed [31:0]       fc2_b       [0 : FC2_OUT - 1],
 
-    // Final output logits
-    output wire signed [BITS+8:0]   cnn_out     [0 : FC2_OUT - 1]
+    // Final output logits  (FC1 adds 8 bits → BITS+8; FC2 layer adds another 8 → BITS+16)
+    output wire signed [BITS+16:0]  cnn_out     [0 : FC2_OUT - 1]
 );
 
     // ==================================================================

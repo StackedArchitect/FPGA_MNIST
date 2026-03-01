@@ -63,8 +63,8 @@ module tb_cnn;
     reg signed [31:0] fc2_w [0 : FC2_OUT - 1][0 : FC2_WIDTH];
     reg signed [31:0] fc2_b [0 : FC2_OUT - 1];
 
-    // Output
-    wire signed [BITS+8:0] cnn_out [0 : FC2_OUT - 1];
+    // Output  (OUTPUT_BITS = BITS+8+8 = 47 — two FC layers each add 8 bits)
+    wire signed [OUTPUT_BITS:0] cnn_out [0 : FC2_OUT - 1];
 
     // ---- DUT instantiation ----
     cnn_top #(
@@ -110,7 +110,7 @@ module tb_cnn;
     // ---- Argmax vars ----
     integer detected_digit;
     integer n;
-    reg signed [BITS+8:0] max_val;
+    reg signed [OUTPUT_BITS:0] max_val;
 
     // Expected label
     reg [31:0] expected_label_arr [0:0];

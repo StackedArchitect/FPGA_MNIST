@@ -71,7 +71,7 @@ module cnn2d_synth_top (
     localparam CONV1_W_SIZE  = CONV1_OUT_CH * INPUT_CH * CONV1_KERNEL * CONV1_KERNEL;  // 36
     localparam CONV2_W_SIZE  = CONV2_OUT_CH * CONV2_IN_CH * CONV2_KERNEL * CONV2_KERNEL; // 288
 
-    localparam OUT_BITS      = BITS + 8;  // 39
+    localparam OUT_BITS      = BITS + 16; // 47  (FC1 → BITS+8, FC2 layer → BITS+16)
 
     // -------------------------------------------------------------------------
     // Weight ROMs initialized from .mem files

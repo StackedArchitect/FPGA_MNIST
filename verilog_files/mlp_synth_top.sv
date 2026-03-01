@@ -19,11 +19,11 @@
 module mlp_synth_top (
     input  wire                      clk,
     input  wire                      rstn,
-    // 784 Q16.16 pixel values (from ADC / memory interface in real system)
-    input  wire signed [31:0]        pixel_in  [0:783],
     // Inference result: argmax of 10 output logits (0-9)
     output reg  [3:0]                pred_out
 );
+    // Input image ROM — loaded from .mem; eliminates the impossible 25K-bit I/O bus.
+    reg signed [31:0] pixel_in [0:783];
 
     // -------------------------------------------------------------------------
     // Parameters (must match tb_neuralnetwork.sv)
@@ -67,6 +67,7 @@ module mlp_synth_top (
 
     // Adjust paths if your Vivado project (.xpr) is not at the repo root
     initial begin
+        $readmemh("mlp_weights/data_in.mem", pixel_in);
         $readmemh("mlp_weights/w1_1.mem",  w1_1);
         $readmemh("mlp_weights/w1_2.mem",  w1_2);
         $readmemh("mlp_weights/w1_3.mem",  w1_3);
@@ -93,7 +94,7 @@ module mlp_synth_top (
 
     // -------------------------------------------------------------------------
     // Build padded data_in: [0]*20 + pixel_in[0:783] + [0]*20 → 824 entries
-    // -------------------------------------------------------------------------
+    // (pixel_in is a constant ROM so Vivado constant-folds this entirely)
     reg signed [31:0] data_in [0:L1_NEURON_WIDTH];
     integer pi;
     always @(*) begin

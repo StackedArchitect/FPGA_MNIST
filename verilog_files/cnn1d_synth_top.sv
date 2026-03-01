@@ -20,13 +20,14 @@
 //==============================================================================
 
 module cnn1d_synth_top (
-    input  wire                clk,
-    input  wire                rstn,
-    // 784 Q16.16 pixel values (1-D signal, range [-1,1] → Q16.16)
-    input  wire signed [31:0]  pixel_in [0:783],
+    input  wire        clk,
+    input  wire        rstn,
     // Inference result: argmax of 10 output logits (class 0-9)
-    output reg  [3:0]          pred_out
+    output reg  [3:0]  pred_out
 );
+    // Input image ROM — loaded from .mem; eliminates the impossible 25K-bit I/O bus
+    // so Vivado can route the design and analyse real internal timing paths.
+    reg signed [31:0] pixel_in [0:783];
 
     // -------------------------------------------------------------------------
     // Parameters (matching cnn_top.sv defaults)
@@ -77,6 +78,7 @@ module cnn1d_synth_top (
     reg signed [31:0] fc2_b   [0 : FC2_OUT - 1];               //  10 entries
 
     initial begin
+        $readmemh("cnn_weights/data_in.mem",  pixel_in);
         $readmemh("cnn_weights/conv1_w.mem", conv1_w);
         $readmemh("cnn_weights/conv1_b.mem", conv1_b);
         $readmemh("cnn_weights/conv2_w.mem", conv2_w);

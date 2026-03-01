@@ -79,6 +79,10 @@ module maxpool2d #(
     always @(posedge clk) begin
         if (!rstn) begin
             state        <= S_IDLE;
+            out_row_cnt  <= 0;
+            out_col_cnt  <= 0;
+            pool_r_cnt   <= 0;
+            pool_c_cnt   <= 0;
             pos_counter  <= 0;
             pool_counter <= 0;
             done         <= 0;
@@ -89,6 +93,10 @@ module maxpool2d #(
 
             case (state)
                 S_IDLE: begin
+                    out_row_cnt  <= 0;
+                    out_col_cnt  <= 0;
+                    pool_r_cnt   <= 0;
+                    pool_c_cnt   <= 0;
                     pos_counter  <= 0;
                     pool_counter <= 0;
                     for (i = 0; i < CHANNELS; i = i + 1)
@@ -106,9 +114,16 @@ module maxpool2d #(
 
                     if (pool_counter == POOL_ELEMENTS - 1) begin
                         pool_counter <= 0;
+                        pool_r_cnt   <= 0;
+                        pool_c_cnt   <= 0;
                         state <= S_STORE;
                     end else begin
                         pool_counter <= pool_counter + 1;
+                        if (pool_c_cnt == POOL_W - 1) begin
+                            pool_c_cnt <= 0;
+                            pool_r_cnt <= pool_r_cnt + 1;
+                        end else
+                            pool_c_cnt <= pool_c_cnt + 1;
                     end
                 end
 
@@ -123,6 +138,11 @@ module maxpool2d #(
                         state <= S_DONE;
                     end else begin
                         pos_counter <= pos_counter + 1;
+                        if (out_col_cnt == OUT_W - 1) begin
+                            out_col_cnt <= 0;
+                            out_row_cnt <= out_row_cnt + 1;
+                        end else
+                            out_col_cnt <= out_col_cnt + 1;
                         state <= S_COMPARE;
                     end
                 end

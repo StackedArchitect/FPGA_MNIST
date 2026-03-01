@@ -25,10 +25,12 @@ module multiplier #(parameter BITS)
   wire signed [BITS+32:0] full_product;
   assign full_product = w * x;
 
-  always @ (counter) begin
-    if (! rstn)
-      mult_result <= 0;
+  // Fully combinational — always @(*) ensures correct sensitivity and
+  // prevents latch inference from incomplete sensitivity list.
+  always @(*) begin
+    if (!rstn)
+      mult_result = 0;
     else
-      mult_result <= full_product >>> 16;  // Q16.16 normalization
+      mult_result = full_product >>> 16;  // Q16.16 normalization
   end
 endmodule

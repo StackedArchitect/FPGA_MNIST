@@ -27,10 +27,25 @@ module layer #(
     wire [31:0] bus_counter;
 
     //------------------------------------------------------------------------
+    // Shared data register — ONE mux instead of NUM_NEURONS identical copies.
+    // All neurons read the same data_in[counter], so we select it once here.
+    // For FC1 (32 neurons, 240 inputs) this saves ~40,000 LUT6.
+    //------------------------------------------------------------------------
+    wire signed [LAYER_BITS:0] shared_data_value;
+    register #(
+        .WIDTH (LAYER_NEURON_WIDTH),
+        .BITS  (LAYER_BITS)
+    ) shared_data_reg (
+        .data    (data_in),
+        .counter (bus_counter),
+        .value   (shared_data_value)
+    );
+
+    //------------------------------------------------------------------------
     // Generate NUM_NEURONS neuron instances
     // Each neuron receives:
     //   - Its own row of the weight matrix:  weights[i][0..LAYER_NEURON_WIDTH]
-    //   - Shared input data:                 data_in[0..LAYER_NEURON_WIDTH]
+    //   - Shared data scalar:                shared_data_value
     //   - Its own bias:                      b[i]
     //   - Shared counter:                    bus_counter
     //------------------------------------------------------------------------
@@ -44,7 +59,7 @@ module layer #(
                 .B_BITS       (B_BITS)
             ) neuron_inst (
                 .weights             (weights[i]),       // 2D array slice — Vivado supported
-                .data_in             (data_in),
+                .data_value          (shared_data_value), // scalar — shared mux
                 .b                   (b[i]),
                 .clk                 (clk),
                 .rstn                (rstn),

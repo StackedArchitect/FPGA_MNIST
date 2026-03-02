@@ -33,7 +33,6 @@ module neuron_hiddenlayer #(parameter NEURON_WIDTH, NEURON_BITS, COUNTER_END, B_
   multiplier #(.BITS(NEURON_BITS)) MP1(
     .clk (clk),
     .rstn (rstn),
-    .counter (counter),
     .w (bus_w),
     .x (bus_data),
     .mult_result (bus_mult_result)
@@ -42,7 +41,6 @@ module neuron_hiddenlayer #(parameter NEURON_WIDTH, NEURON_BITS, COUNTER_END, B_
   adder #(.BITS(NEURON_BITS)) AD1(
     .clk (clk),
     .rstn (rstn),
-    .counter (counter),
     .value_in (bus_mult_result),
     .value_out (bus_adder));
   

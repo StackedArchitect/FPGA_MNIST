@@ -4,17 +4,16 @@
 //
 // Architecture : Conv1(k=5, 4ch) → MaxPool(4) → Conv2(k=3, 8ch) →
 //                MaxPool(4) → FC(32) → FC(10)   [Q16.16 fixed-point, 784 input]
-// Compute DUT  : cnn_top.sv  (unchanged)
+// Compute DUT  : cnn_top.sv  (synthesis-ready version)
 //
 // Synthesis notes
 // ---------------
-//  • Weight arrays are internal ROMs, initialized from .mem files.
-//    Vivado infers small arrays as LUT-ROM and large arrays as BRAM.
-//  • pixel_in is the 784-pixel Q16.16 input – a real external port so
-//    Vivado sees genuine timing paths through the compute datapath.
-//  • 2D arrays fc1_w / fc2_w are loaded row-by-row by Vivado's $readmemh
-//    (outer index first), exactly matching the testbench convention.
-//  • No logic in cnn_top.sv or any sub-module is changed.
+//  • Conv weights are small LUT-ROM arrays (20 + 96 entries).
+//  • FC weights are stored as BRAM ROM inside layer_seq modules,
+//    initialized from .mem files — no FC weight ports on cnn_top.
+//  • Conv + Pool fused into conv_pool_1d — conv buffers stay internal.
+//  • pixel_in is an internal ROM loaded from .mem, eliminating the
+//    impossible 25K-bit I/O bus so Vivado can route and time the design.
 //  • Adjust $readmemh paths if your Vivado project root differs from the
 //    repository root.
 //==============================================================================
@@ -25,8 +24,7 @@ module cnn1d_synth_top (
     // Inference result: argmax of 10 output logits (class 0-9)
     output reg  [3:0]  pred_out
 );
-    // Input image ROM — loaded from .mem; eliminates the impossible 25K-bit I/O bus
-    // so Vivado can route the design and analyse real internal timing paths.
+    // Input image ROM — loaded from .mem
     reg signed [31:0] pixel_in [0:783];
 
     // -------------------------------------------------------------------------
@@ -47,7 +45,6 @@ module cnn1d_synth_top (
 
     localparam FC1_OUT       = 32;
     localparam FC2_OUT       = 10;
-    localparam PAD           = 20;
     localparam BITS          = 31;
 
     // Derived (same as cnn_top.sv)
@@ -56,8 +53,6 @@ module cnn1d_synth_top (
     localparam CONV2_OUT_LEN = POOL1_OUT_LEN - CONV2_KERNEL + 1;      // 193
     localparam POOL2_OUT_LEN = CONV2_OUT_LEN / POOL2_SIZE;            // 48
     localparam FLATTEN_SIZE  = POOL2_OUT_LEN * CONV2_OUT_CH;          // 384
-    localparam FC1_WIDTH     = PAD + FLATTEN_SIZE + PAD - 1;          // 423
-    localparam FC2_WIDTH     = PAD + FC1_OUT + PAD - 1;               // 71
 
     localparam CONV1_W_SIZE  = CONV1_OUT_CH * CONV1_IN_CH * CONV1_KERNEL;   // 20
     localparam CONV2_W_SIZE  = CONV2_OUT_CH * CONV2_IN_CH * CONV2_KERNEL;   // 96
@@ -66,15 +61,15 @@ module cnn1d_synth_top (
 
     // -------------------------------------------------------------------------
     // Weight ROMs initialized from .mem files
+    // Conv weights: small — stay as LUT-ROM (20 + 96 entries)
+    // FC weights:   large — stored as BRAM inside layer_seq modules
     // Adjust paths relative to your Vivado project root (.xpr location)
     // -------------------------------------------------------------------------
     reg signed [31:0] conv1_w [0 : CONV1_W_SIZE - 1];          //  20 entries
     reg signed [31:0] conv1_b [0 : CONV1_OUT_CH - 1];          //   4 entries
     reg signed [31:0] conv2_w [0 : CONV2_W_SIZE - 1];          //  96 entries
     reg signed [31:0] conv2_b [0 : CONV2_OUT_CH - 1];          //   8 entries
-    reg signed [31:0] fc1_w   [0 : FC1_OUT - 1][0 : FC1_WIDTH]; //  32×424
     reg signed [31:0] fc1_b   [0 : FC1_OUT - 1];               //  32 entries
-    reg signed [31:0] fc2_w   [0 : FC2_OUT - 1][0 : FC2_WIDTH]; //  10×72
     reg signed [31:0] fc2_b   [0 : FC2_OUT - 1];               //  10 entries
 
     initial begin
@@ -83,14 +78,12 @@ module cnn1d_synth_top (
         $readmemh("cnn_weights/conv1_b.mem", conv1_b);
         $readmemh("cnn_weights/conv2_w.mem", conv2_w);
         $readmemh("cnn_weights/conv2_b.mem", conv2_b);
-        $readmemh("cnn_weights/fc1_w.mem",   fc1_w);
         $readmemh("cnn_weights/fc1_b.mem",   fc1_b);
-        $readmemh("cnn_weights/fc2_w.mem",   fc2_w);
         $readmemh("cnn_weights/fc2_b.mem",   fc2_b);
     end
 
     // -------------------------------------------------------------------------
-    // DUT instantiation — cnn_top.sv is UNTOUCHED
+    // DUT instantiation — FC weights loaded internally via BRAM ROM
     // -------------------------------------------------------------------------
     wire signed [OUT_BITS:0] cnn_out [0 : FC2_OUT - 1];
 
@@ -105,8 +98,9 @@ module cnn1d_synth_top (
         .POOL2_SIZE    (POOL2_SIZE),
         .FC1_OUT       (FC1_OUT),
         .FC2_OUT       (FC2_OUT),
-        .PAD           (PAD),
-        .BITS          (BITS)
+        .BITS          (BITS),
+        .FC1_WEIGHT_FILE("cnn_weights/fc1_w.mem"),
+        .FC2_WEIGHT_FILE("cnn_weights/fc2_w.mem")
     ) u_cnn1d (
         .clk     (clk),
         .rstn    (rstn),
@@ -115,9 +109,7 @@ module cnn1d_synth_top (
         .conv1_b (conv1_b),
         .conv2_w (conv2_w),
         .conv2_b (conv2_b),
-        .fc1_w   (fc1_w),
         .fc1_b   (fc1_b),
-        .fc2_w   (fc2_w),
         .fc2_b   (fc2_b),
         .cnn_out (cnn_out)
     );

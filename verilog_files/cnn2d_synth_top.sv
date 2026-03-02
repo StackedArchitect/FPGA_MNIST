@@ -76,15 +76,15 @@ module cnn2d_synth_top (
 
     // -------------------------------------------------------------------------
     // Weight ROMs initialized from .mem files
+    // Conv weights: small — stay as LUT-ROM (36 + 288 entries)
+    // FC weights:   large — now stored as BRAM inside layer_seq modules
     // Adjust paths relative to your Vivado project root (.xpr location)
     // -------------------------------------------------------------------------
     reg signed [31:0] conv1_w [0 : CONV1_W_SIZE - 1];            //  36 entries
     reg signed [31:0] conv1_b [0 : CONV1_OUT_CH - 1];            //   4 entries
     reg signed [31:0] conv2_w [0 : CONV2_W_SIZE - 1];            // 288 entries
     reg signed [31:0] conv2_b [0 : CONV2_OUT_CH - 1];            //   8 entries
-    reg signed [31:0] fc1_w   [0 : FC1_OUT - 1][0 : FC1_WIDTH];  //  32×240 = 7680
     reg signed [31:0] fc1_b   [0 : FC1_OUT - 1];                 //  32 entries
-    reg signed [31:0] fc2_w   [0 : FC2_OUT - 1][0 : FC2_WIDTH];  //  10×72  =  720
     reg signed [31:0] fc2_b   [0 : FC2_OUT - 1];                 //  10 entries
 
     initial begin
@@ -93,31 +93,31 @@ module cnn2d_synth_top (
         $readmemh("cnn2d_weights/conv1_b.mem", conv1_b);
         $readmemh("cnn2d_weights/conv2_w.mem", conv2_w);
         $readmemh("cnn2d_weights/conv2_b.mem", conv2_b);
-        $readmemh("cnn2d_weights/fc1_w.mem",   fc1_w);
         $readmemh("cnn2d_weights/fc1_b.mem",   fc1_b);
-        $readmemh("cnn2d_weights/fc2_w.mem",   fc2_w);
         $readmemh("cnn2d_weights/fc2_b.mem",   fc2_b);
     end
 
     // -------------------------------------------------------------------------
-    // DUT instantiation — cnn2d_top.sv is UNTOUCHED
+    // DUT instantiation — FC weights loaded internally via BRAM ROM
     // -------------------------------------------------------------------------
     wire signed [OUT_BITS:0] cnn_out [0 : FC2_OUT - 1];
 
     cnn2d_top #(
-        .INPUT_H       (INPUT_H),
-        .INPUT_W       (INPUT_W),
-        .INPUT_CH      (INPUT_CH),
-        .CONV1_OUT_CH  (CONV1_OUT_CH),
-        .CONV1_KERNEL  (CONV1_KERNEL),
-        .POOL1_SIZE    (POOL1_SIZE),
-        .CONV2_OUT_CH  (CONV2_OUT_CH),
-        .CONV2_KERNEL  (CONV2_KERNEL),
-        .POOL2_SIZE    (POOL2_SIZE),
-        .FC1_OUT       (FC1_OUT),
-        .FC2_OUT       (FC2_OUT),
-        .PAD           (PAD),
-        .BITS          (BITS)
+        .INPUT_H        (INPUT_H),
+        .INPUT_W        (INPUT_W),
+        .INPUT_CH       (INPUT_CH),
+        .CONV1_OUT_CH   (CONV1_OUT_CH),
+        .CONV1_KERNEL   (CONV1_KERNEL),
+        .POOL1_SIZE     (POOL1_SIZE),
+        .CONV2_OUT_CH   (CONV2_OUT_CH),
+        .CONV2_KERNEL   (CONV2_KERNEL),
+        .POOL2_SIZE     (POOL2_SIZE),
+        .FC1_OUT        (FC1_OUT),
+        .FC2_OUT        (FC2_OUT),
+        .PAD            (PAD),
+        .BITS           (BITS),
+        .FC1_WEIGHT_FILE("cnn2d_weights/fc1_w.mem"),
+        .FC2_WEIGHT_FILE("cnn2d_weights/fc2_w.mem")
     ) u_cnn2d (
         .clk     (clk),
         .rstn    (rstn),
@@ -126,9 +126,7 @@ module cnn2d_synth_top (
         .conv1_b (conv1_b),
         .conv2_w (conv2_w),
         .conv2_b (conv2_b),
-        .fc1_w   (fc1_w),
         .fc1_b   (fc1_b),
-        .fc2_w   (fc2_w),
         .fc2_b   (fc2_b),
         .cnn_out (cnn_out)
     );

@@ -19,7 +19,7 @@ CONV2_IN_CH = 4; CONV2_OUT_CH = 8; CONV2_KERNEL = 3
 CONV2_OUT_LEN = 193
 POOL2_SIZE = 4; POOL2_OUT_LEN = 48
 FLATTEN_SIZE = 384; FC1_OUT = 32; FC2_OUT = 10
-PAD = 20; FIXED_POINT_SCALE = 2**16
+FIXED_POINT_SCALE = 2**16
 
 # ---- Model definition (must match training) ----
 class MNIST_CNN(nn.Module):
@@ -106,4 +106,4 @@ with open(os.path.join(CNN_WEIGHTS_DIR, "expected_label.mem"), 'w') as f:
 print(f"\nExported to cnn_weights/:")
 print(f"  data_in.mem        ({len(hex_pixels)} pixels)")
 print(f"  expected_label.mem (label={test_label})")
-print(f"\nRerun Vivado simulation with 'run 200000ns' to verify hardware match.")
+print(f"\nRerun Vivado simulation with 'run 800000ns' to verify hardware match.")

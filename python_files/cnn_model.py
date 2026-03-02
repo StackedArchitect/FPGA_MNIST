@@ -211,18 +211,20 @@ def export_biases(bias_tensor, out_filename):
 
 
 def export_fc_weights(weight_tensor, num_inputs, out_filename):
-    """FC weights with PAD zero-padding on each side (same format as MLP)."""
+    """FC weights — flat row-major, NO padding (for layer_seq BRAM ROM).
+
+    Layout: neuron_0 weight[0..N-1], neuron_1 weight[0..N-1], ...
+    Same row-major order as $readmemh fills a 1D array.
+    """
     w = weight_tensor.cpu().numpy()  # (num_neurons, num_inputs)
     num_neurons = w.shape[0]
-    padding = ["00000000"] * PAD
     lines = []
     for n in range(num_neurons):
         hex_w = [to_fixed_point_hex(v) for v in w[n]]
-        lines.extend(padding + hex_w + padding)
+        lines.extend(hex_w)
     with open(out_filename, 'w') as fp:
         fp.write('\n'.join(lines))
-    entries_per_neuron = PAD + num_inputs + PAD
-    print(f"Generated {out_filename}  ({num_neurons} neurons × {entries_per_neuron} = {len(lines)} entries)")
+    print(f"Generated {out_filename}  ({num_neurons} neurons × {num_inputs} = {len(lines)} entries, no padding)")
 
 
 # ===========================================================================
@@ -274,4 +276,4 @@ print(f"Generated cnn_weights/expected_label.mem  (label={test_label})")
 print(f"\nAll .mem files generated in cnn_weights/ folder!")
 print(f"Format: Q16.16 fixed-point")
 print(f"Conv weights: flat (filter × channel × kernel)")
-print(f"FC weights:   padded ({PAD} zeros each side)")
+print(f"FC weights:   flat row-major, no padding (for layer_seq BRAM ROM)")

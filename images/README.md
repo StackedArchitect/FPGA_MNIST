@@ -4,21 +4,21 @@ Drop Vivado screenshots into the correct subfolder. README links are already wir
 
 ## Folder → Model mapping
 
-| Folder   | Model              | Synthesis top     |
-|----------|--------------------|-------------------|
-| `mlp/`   | MLP 784→10→10      | `mlp_synth_top`   |
-| `1dcnn/` | 1D CNN (4ch, 8ch)  | `cnn1d_synth_top` |
-| `2dcnn/` | 2D CNN (4ch, 8ch)  | `cnn2d_synth_top` |
+| Folder   | Model             | Synthesis top     |
+| -------- | ----------------- | ----------------- |
+| `mlp/`   | MLP 784→10→10     | `mlp_synth_top`   |
+| `1dcnn/` | 1D CNN (4ch, 8ch) | `cnn1d_synth_top` |
+| `2dcnn/` | 2D CNN (4ch, 8ch) | `cnn2d_synth_top` |
 
 ## Required filenames (use exactly these names)
 
-| Filename         | What to show                                                       |
-|------------------|--------------------------------------------------------------------|
-| `simulation.png` | Waveform — rstn, clk, done signal, and output logits/pred          |
-| `resource.png`   | Report Utilization → Summary (LUT, FF, DSP, BRAM counts)           |
-| `timing.png`     | Report Timing Summary → WNS, clock frequency                       |
-| `power.png`      | Report Power → Summary (total, dynamic, static breakdown)          |
-| `schematic.png`  | Open Synthesized Design → Schematic (top-level hierarchy view)     |
+| Filename         | What to show                                                   |
+| ---------------- | -------------------------------------------------------------- |
+| `simulation.png` | Waveform — rstn, clk, done signal, and output logits/pred      |
+| `resource.png`   | Report Utilization → Summary (LUT, FF, DSP, BRAM counts)       |
+| `timing.png`     | Report Timing Summary → WNS, clock frequency                   |
+| `power.png`      | Report Power → Summary (total, dynamic, static breakdown)      |
+| `schematic.png`  | Open Synthesized Design → Schematic (top-level hierarchy view) |
 
 ## How to run synthesis in Vivado
 

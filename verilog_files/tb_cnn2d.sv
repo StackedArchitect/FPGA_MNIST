@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 //============================================================================
-// Testbench for 2D CNN
+// Testbench for 2D CNN (pipelined conv_pool_2d + sequential FC via layer_seq)
 //
 // Architecture: Conv2D_1(1→4, 3×3) → Pool2D(2×2) → Conv2D_2(4→8, 3×3)
 //               → Pool2D(2×2) → FC1(200→32) → FC2(32→10)
@@ -39,16 +39,14 @@ module tb_cnn2d;
     parameter PAD           = 20;
 
     parameter FC1_WIDTH       = PAD + FLATTEN_SIZE + PAD - 1;  // 239
-    parameter FC1_COUNTER_END = FC1_WIDTH - 3;                 // 236
     parameter FC2_WIDTH       = PAD + FC1_OUT + PAD - 1;       // 71
-    parameter FC2_COUNTER_END = FC2_WIDTH - 3;                 // 68
 
     parameter BITS         = 31;
     localparam OUTPUT_BITS = BITS + 8 + 8;  // Two FC layers add 8 bits each
 
-    // Timing — conv2d layers: 26×26×9 + 13×13×4 + 11×11×36 + 5×5×4 + FC ≈ 12000 cycles
+    // Timing — pipelined conv layers ~75K cycles + sequential FC layers ~8.5K cycles
     parameter CLK_PERIOD_NS   = 10;
-    parameter SIM_DURATION_NS = 200000;  // Generous for safety
+    parameter SIM_DURATION_NS = 1200000;  // 1.2 ms — generous for pipelined design
 
     // ---- DUT signals ----
     reg  clk;
@@ -63,14 +61,12 @@ module tb_cnn2d;
     reg signed [31:0] conv2_w [0 : CONV2_OUT_CH * CONV2_IN_CH * CONV2_KERNEL * CONV2_KERNEL - 1];
     reg signed [31:0] conv2_b [0 : CONV2_OUT_CH - 1];
 
-    // FC weights & biases (2D arrays with padding)
-    reg signed [31:0] fc1_w [0 : FC1_OUT - 1][0 : FC1_WIDTH];
+    // FC biases (weights now loaded internally by layer_seq from .mem files)
     reg signed [31:0] fc1_b [0 : FC1_OUT - 1];
-    reg signed [31:0] fc2_w [0 : FC2_OUT - 1][0 : FC2_WIDTH];
     reg signed [31:0] fc2_b [0 : FC2_OUT - 1];
 
     // Output
-    wire signed [BITS+8:0] cnn_out [0 : FC2_OUT - 1];
+    wire signed [BITS+16:0] cnn_out [0 : FC2_OUT - 1];
 
     // ---- DUT instantiation ----
     cnn2d_top #(
@@ -87,7 +83,9 @@ module tb_cnn2d;
         .FC1_OUT      (FC1_OUT),
         .FC2_OUT      (FC2_OUT),
         .PAD          (PAD),
-        .BITS         (BITS)
+        .BITS         (BITS),
+        .FC1_WEIGHT_FILE("fc1_w.mem"),
+        .FC2_WEIGHT_FILE("fc2_w.mem")
     ) dut (
         .clk      (clk),
         .rstn     (rstn),
@@ -96,9 +94,7 @@ module tb_cnn2d;
         .conv1_b  (conv1_b),
         .conv2_w  (conv2_w),
         .conv2_b  (conv2_b),
-        .fc1_w    (fc1_w),
         .fc1_b    (fc1_b),
-        .fc2_w    (fc2_w),
         .fc2_b    (fc2_b),
         .cnn_out  (cnn_out)
     );
@@ -107,23 +103,14 @@ module tb_cnn2d;
     initial clk = 1'b0;
     always #(CLK_PERIOD_NS / 2) clk = ~clk;
 
-    // ---- Temp flat arrays for loading FC weights ----
-    localparam FC1_ENTRIES = FC1_WIDTH + 1;  // 240
-    localparam FC2_ENTRIES = FC2_WIDTH + 1;  // 72
-
-    reg signed [31:0] fc1_w_flat [0 : FC1_OUT * FC1_ENTRIES - 1];
-    reg signed [31:0] fc2_w_flat [0 : FC2_OUT * FC2_ENTRIES - 1];
-
     // ---- Argmax vars ----
     integer detected_digit;
     integer n;
-    reg signed [BITS+8:0] max_val;
+    reg signed [BITS+16:0] max_val;
 
     // Expected label
     reg [31:0] expected_label_arr [0:0];
     integer    expected_label;
-
-    integer row, col;
 
     // ---- Argmax task ----
     task find_predicted_digit;
@@ -175,23 +162,9 @@ module tb_cnn2d;
                  CONV2_OUT_CH);
         $readmemh("conv2_b.mem", conv2_b);
 
-        // ---- Load FC weights (flat → 2D) ----
-        $display("[INFO] Loading FC1 weights (fc1_w.mem) — %0d neurons × %0d entries ...",
-                 FC1_OUT, FC1_ENTRIES);
-        $readmemh("fc1_w.mem", fc1_w_flat);
-        for (row = 0; row < FC1_OUT; row = row + 1)
-            for (col = 0; col < FC1_ENTRIES; col = col + 1)
-                fc1_w[row][col] = fc1_w_flat[row * FC1_ENTRIES + col];
-
+        // ---- Load FC biases (weights loaded internally by layer_seq) ----
         $display("[INFO] Loading FC1 biases (fc1_b.mem) — %0d biases ...", FC1_OUT);
         $readmemh("fc1_b.mem", fc1_b);
-
-        $display("[INFO] Loading FC2 weights (fc2_w.mem) — %0d neurons × %0d entries ...",
-                 FC2_OUT, FC2_ENTRIES);
-        $readmemh("fc2_w.mem", fc2_w_flat);
-        for (row = 0; row < FC2_OUT; row = row + 1)
-            for (col = 0; col < FC2_ENTRIES; col = col + 1)
-                fc2_w[row][col] = fc2_w_flat[row * FC2_ENTRIES + col];
 
         $display("[INFO] Loading FC2 biases (fc2_b.mem) — %0d biases ...", FC2_OUT);
         $readmemh("fc2_b.mem", fc2_b);
@@ -244,20 +217,15 @@ module tb_cnn2d;
     end
 
     // ---- Monitor layer done signals ----
-    always @(posedge dut.conv1_done) begin
-        $display("[INFO] Conv1  DONE at %0t ns. Pool1 starting ...", $time);
-    end
     always @(posedge dut.pool1_done) begin
-        $display("[INFO] Pool1  DONE at %0t ns. Conv2 starting ...", $time);
-    end
-    always @(posedge dut.conv2_done) begin
-        $display("[INFO] Conv2  DONE at %0t ns. Pool2 starting ...", $time);
+        $display("[INFO] Conv1+Pool1 DONE at %0t ns. Conv2 starting ...", $time);
     end
     always @(posedge dut.pool2_done) begin
-        $display("[INFO] Pool2  DONE at %0t ns. FC1 starting ...", $time);
+        $display("[INFO] Conv2+Pool2 DONE at %0t ns. FC1 starting ...", $time);
     end
     always @(posedge dut.fc1_done) begin
         $display("[INFO] FC1    DONE at %0t ns. FC2 starting ...", $time);
     end
 
 endmodule
+

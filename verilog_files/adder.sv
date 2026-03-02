@@ -4,7 +4,6 @@ module adder #(parameter BITS)
 (
   input clk,
   input rstn,
-  input reg [31:0] counter,
   input reg signed [BITS+16:0] value_in,
   output reg signed [BITS+24:0] value_out);
   

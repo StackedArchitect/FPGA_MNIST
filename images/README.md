@@ -12,13 +12,12 @@ Drop Vivado screenshots into the correct subfolder. README links are already wir
 
 ## Required filenames (use exactly these names)
 
-| Filename         | What to show                                                   |
-| ---------------- | -------------------------------------------------------------- |
-| `simulation.png` | Waveform — rstn, clk, done signal, and output logits/pred      |
-| `resource.png`   | Report Utilization → Summary (LUT, FF, DSP, BRAM counts)       |
-| `timing.png`     | Report Timing Summary → WNS, clock frequency                   |
-| `power.png`      | Report Power → Summary (total, dynamic, static breakdown)      |
-| `schematic.png`  | Open Synthesized Design → Schematic (top-level hierarchy view) |
+| Filename           | What to show                                              |
+| ------------------ | --------------------------------------------------------- |
+| `simulation.jpeg`  | Waveform — rstn, clk, done signal, and output logits/pred |
+| `utilization.jpeg` | Report Utilization → Summary (LUT, FF, DSP, BRAM counts)  |
+| `timing.jpeg`      | Report Timing Summary → WNS, clock frequency              |
+| `power.jpeg`       | Report Power → Summary (total, dynamic, static breakdown) |
 
 ## How to run synthesis in Vivado
 

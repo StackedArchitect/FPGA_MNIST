@@ -132,21 +132,137 @@ All three designs are verified in Vivado XSim **behavioral simulation** using re
 
 ### 1D CNN Simulation
 
-- **Test image:** index 0 — true label **7**, predicted **7** ✅
-- **Runtime:** ~200,000 ns (conv layers are sequential and take most cycles)
+- **Test image:** true label **6**, predicted **6** ✅
+- **Runtime:** FC2 done at ~88,345,000 ns simulation time (conv layers are sequential and take most cycles)
 - Verified with a dedicated box-filter unit test (`tb_conv2d_box.sv`): **32/32 exact match** against Python reference
 
-![1D CNN simulation waveform](images/1dcnn/simulation.png)
+<details>
+<summary>Full simulation console output</summary>
+
+```
+============================================================
+1D CNN TESTBENCH - LOADING DATA
+============================================================
+
+[INFO] Loading Conv1 weights (conv1_w.mem) - 20 entries ...
+[INFO] Loading Conv1 biases (conv1_b.mem) - 4 entries ...
+[INFO] Loading Conv2 weights (conv2_w.mem) - 96 entries ...
+[INFO] Loading Conv2 biases (conv2_b.mem) - 8 entries ...
+[INFO] Loading FC1 weights (fc1_w.mem) - 32 neurons — 424 entries ...
+[INFO] Loading FC1 biases (fc1_b.mem) - 32 biases ...
+[INFO] Loading FC2 weights (fc2_w.mem) - 10 neurons — 72 entries ...
+[INFO] Loading FC2 biases (fc2_b.mem) - 10 biases ...
+[INFO] Loading input data (data_in.mem) - 784 pixels ...
+[INFO] Loading expected label (expected_label.mem) ...
+[INFO] Expected label: 6
+
+[INFO] Applying reset ...
+[INFO] Reset released at 20000 ns. Inference running ...
+
+[INFO] Conv1 DONE at 46835000 ns. Pool1 starting ...
+[INFO] Pool1 DONE at 56605000 ns. Conv2 starting ...
+[INFO] Conv2 DONE at 81715000 ns. Pool2 starting ...
+[INFO] Pool2 DONE at 84135000 ns. FC1 starting ...
+[INFO] FC1 DONE at 88345000 ns. FC2 starting ...
+
+*** RESULT: PASS - Prediction matches expected label! ***
+
+============================================================
+CNN INFERENCE COMPLETE - RESULTS
+============================================================
+
+CNN OUTPUT VALUES (Q16.16 raw logits)
+------------------------------------------------------------
+
+Output[0] (digit 0) = -140125
+Output[1] (digit 1) = -45700
+Output[2] (digit 2) = -37000
+Output[3] (digit 3) = -479983
+Output[4] (digit 4) = 242062
+Output[5] (digit 5) = -15346
+Output[6] (digit 6) = 650351
+Output[7] (digit 7) = -363607
+Output[8] (digit 8) = 116136
+Output[9] (digit 9) = -164515
+
+>>> DETECTED DIGIT: 6 <<<
+>>> Confidence (raw Q16.16 logit): 650351 <<<
+
+--- EXPECTED DIGIT: 6 ---
+
+*** RESULT: PASS - Prediction matches expected label! ***
+```
+
+</details>
+
+![1D CNN simulation waveform](images/1dcnn/simulation.jpeg)
 
 ---
 
 ### 2D CNN Simulation
 
-- **Test image:** index 0 — true label **7**, predicted **7** ✅
-- **Runtime:** ~200,000 ns
+- **Test image:** true label **9**, predicted **9** ✅
+- **Runtime:** FC2 done at ~124,535,000 ns simulation time
 - **Software accuracy:** 98.35% on the full 10,000-image MNIST test set
 
-![2D CNN simulation waveform](images/2dcnn/simulation.png)
+<details>
+<summary>Full simulation console output</summary>
+
+```
+============================================================
+2D CNN TESTBENCH - LOADING DATA
+============================================================
+
+[INFO] Loading Conv1 weights (conv1_w.mem) - 36 entries ...
+[INFO] Loading Conv1 biases (conv1_b.mem) - 4 entries ...
+[INFO] Loading Conv2 weights (conv2_w.mem) - 288 entries ...
+[INFO] Loading Conv2 biases (conv2_b.mem) - 8 entries ...
+[INFO] Loading FC1 weights (fc1_w.mem) - 32 neurons — 240 entries ...
+[INFO] Loading FC1 biases (fc1_b.mem) - 32 biases ...
+[INFO] Loading FC2 weights (fc2_w.mem) - 10 neurons — 72 entries ...
+[INFO] Loading FC2 biases (fc2_b.mem) - 10 biases ...
+[INFO] Loading input data (data_in.mem) - 784 pixels (28x28) ...
+[INFO] Loading expected label (expected_label.mem) ...
+[INFO] Expected label: 9
+
+[INFO] Applying reset ...
+[INFO] Reset released at 20000 ns. Inference running ...
+
+[INFO] Conv1 DONE at 67635000 ns. Pool1 starting ...
+[INFO] Pool1 DONE at 76105000 ns. Conv2 starting ...
+[INFO] Conv2 DONE at 120895000 ns. Pool2 starting ...
+[INFO] Pool2 DONE at 122165000 ns. FC1 starting ...
+[INFO] FC1 DONE at 124535000 ns. FC2 starting ...
+
+============================================================
+2D CNN INFERENCE COMPLETE - RESULTS
+============================================================
+
+2D CNN OUTPUT VALUES (Q16.16 raw logits)
+------------------------------------------------------------
+
+Output[0] (digit 0) = -476696
+Output[1] (digit 1) = -433495
+Output[2] (digit 2) = -329567
+Output[3] (digit 3) = 211216
+Output[4] (digit 4) = -104097
+Output[5] (digit 5) = 11031
+Output[6] (digit 6) = -1333607
+Output[7] (digit 7) = -97071
+Output[8] (digit 8) = -146093
+Output[9] (digit 9) = 578677
+
+>>> DETECTED DIGIT: 9 <<<
+>>> Confidence (raw Q16.16 logit): 578677 <<<
+
+--- EXPECTED DIGIT: 9 ---
+
+*** RESULT: PASS - Prediction matches expected label! ***
+```
+
+</details>
+
+![2D CNN simulation waveform](images/2dcnn/simulation.jpeg)
 
 ---
 
@@ -168,19 +284,19 @@ The 784→10→10 MLP is the simplest design. It uses ~20 DSP48E1 slices (one pe
 
 Expected: ~14 DSP48E1 (4 + 8 conv filters processed sequentially in `conv_pool_1d`, 1 DSP for FC1, 1 DSP for FC2 via `layer_seq`). FC weights stored in BRAM (~15 BRAM36k blocks) instead of LUT-RAM.
 
-![1D CNN resource utilization](images/1dcnn/resource.png)
+![1D CNN resource utilization](images/1dcnn/utilization.jpeg)
 
 ### 1D CNN — Timing Summary
 
 The `conv_pool_1d` state machine processes one filter at a time; all paths are purely sequential so timing closure at 50–100 MHz is comfortable.
 
-![1D CNN timing report](images/1dcnn/timing.png)
+![1D CNN timing report](images/1dcnn/timing.jpeg)
 
 ### 1D CNN — Power Estimate
 
 Higher activity factor than MLP due to the convolution state machines running for hundreds of thousands of cycles per inference.
 
-![1D CNN power report](images/1dcnn/power.png)
+![1D CNN power report](images/1dcnn/power.jpeg)
 
 ---
 
@@ -188,19 +304,19 @@ Higher activity factor than MLP due to the convolution state machines running fo
 
 Expected: ~14 DSP48E1 (sequential per-filter processing in `conv_pool_2d`, 1 DSP each for FC1/FC2 via `layer_seq`). FC weights stored in BRAM; smaller weight footprint than 1D CNN (200×32 = 6,400 vs 384×32 = 12,288 words).
 
-![2D CNN resource utilization](images/2dcnn/resource.png)
+![2D CNN resource utilization](images/2dcnn/utilization.jpeg)
 
 ### 2D CNN — Timing Summary
 
 The `conv_pool_2d` nested loop has a longer critical path than `conv_pool_1d`; verify slack is positive at your target clock.
 
-![2D CNN timing report](images/2dcnn/timing.png)
+![2D CNN timing report](images/2dcnn/timing.jpeg)
 
 ### 2D CNN — Power Estimate
 
 Comparable to 1D CNN — conv loops dominate dynamic power.
 
-![2D CNN power report](images/2dcnn/power.png)
+![2D CNN power report](images/2dcnn/power.jpeg)
 
 ---
 
@@ -339,8 +455,8 @@ FPGA_NN-main/
 │
 ├── images/
 │   ├── README.md                  Screenshot naming guide + Vivado steps
-│   ├── mlp/                       ← drop simulation.png, resource.png,
-│   ├── 1dcnn/                         timing.png, power.png, schematic.png
+│   ├── mlp/                       ← drop simulation.jpeg, utilization.jpeg,
+│   ├── 1dcnn/                         timing.jpeg, power.jpeg
 │   └── 2dcnn/                         here for each model
 │
 └── docs/

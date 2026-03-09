@@ -1,15 +1,13 @@
-# BRAM vs LUT RAM — 1D CNN Memory Comparison
+# Comprehensive Comparison: BRAM vs LUT RAM Implementations for 1D CNN
 
-## Purpose
-
-This folder contains **two separate implementations** of the same 1D CNN for MNIST digit classification, differing **only** in how weights, biases, and internal buffers are stored:
+This document provides a detailed side-by-side comparison of two 1D CNN implementations on an FPGA (xc7z020) based on Vivado post-implementation and simulation reports. The two variants differ strictly in how they store weights, biases, and buffers: one utilizes dedicated Block RAM (BRAM), while the other utilizes Distributed RAM (LUT RAM).
 
 | Variant     | Folder    | Memory Type                   | Xilinx Attribute                  |
 | ----------- | --------- | ----------------------------- | --------------------------------- |
 | **BRAM**    | `bram/`   | Block RAM (36Kbit SRAM tiles) | `(* ram_style = "block" *)`       |
 | **LUT RAM** | `lutram/` | Distributed RAM (LUT-based)   | `(* ram_style = "distributed" *)` |
 
-Both variants produce **identical inference results** (same CNN weights, same computation). The goal is to compare FPGA resource utilization, timing, and power.
+Both variants produce **identical inference results** (same CNN weights, same computation).
 
 ---
 
@@ -31,102 +29,70 @@ FC2 (32→10) → logits → argmax → predicted digit
 
 ---
 
-## Weight/Bias Storage Summary
+## 1. Extracted Data Comparison Table
 
-| Storage                 | Entries      | Bits          | BRAM Variant    | LUT RAM Variant |
-| ----------------------- | ------------ | ------------- | --------------- | --------------- |
-| Conv1 weights           | 20 × 32b     | 640           | BRAM ROM        | Distributed ROM |
-| Conv1 biases            | 4 × 32b      | 128           | BRAM ROM        | Distributed ROM |
-| Conv2 weights           | 96 × 32b     | 3,072         | BRAM ROM        | Distributed ROM |
-| Conv2 biases            | 8 × 32b      | 256           | BRAM ROM        | Distributed ROM |
-| Conv1 buffer            | 780 × 32b    | 24,960        | BRAM            | Distributed RAM |
-| Conv2 buffer            | 193 × 32b    | 6,176         | BRAM            | Distributed RAM |
-| FC1 weights             | 12,288 × 32b | 393,216       | BRAM ROM        | Distributed ROM |
-| FC1 biases              | 32 × 32b     | 1,024         | BRAM ROM        | Distributed ROM |
-| FC2 weights             | 320 × 32b    | 10,240        | BRAM ROM        | Distributed ROM |
-| FC2 biases              | 10 × 32b     | 320           | BRAM ROM        | Distributed ROM |
-| Input image (synth top) | 784 × 32b    | 25,088        | BRAM ROM        | Distributed ROM |
-| **Total**               |              | **~465 Kbit** | **~13 BRAM36k** | **~7,300 LUT6** |
+The following table synthesizes the quantitative metrics extracted directly from the synthesized/implemented Vivado reports and XSim waveforms for both variants.
+
+| Metric Category | Specific Metric | BRAM Variant | LUT RAM Variant | Difference / Winner |
+| :--- | :--- | :--- | :--- | :--- |
+| **Utilization (Resources)** | **LUT Used** | 14,937 (28.08%) | 19,543 (36.73%) | BRAM saves ~4,606 LUTs |
+| | **LUTRAM Used** | N/A | 748 (4.30%) | - |
+| | **Flip-Flops (FF) Used**| 40,362 (37.93%) | 40,578 (38.14%) | Comparable (~200 FF diff) |
+| | **BRAM (36k/18k) Used**| 20 blocks (14.29%) | 0 blocks (0%) | LUT RAM uses 0 BRAM |
+| | **DSP48 Used** | 20 (9.09%) | 20 (9.09%) | Tie (Identical MAC usage) |
+| | **Bonded IOB** | 6 (3.00%) | 6 (3.00%) | Tie |
+| **Power Analysis** | **Total On-Chip Power** | 0.184 W | 0.147 W | LUT RAM uses 37 mW less |
+| | **Device Static Power** | 0.105 W (57%) | 0.103 W (70%) | Comparable |
+| | **Total Dynamic Power** | 0.079 W (43%) | 0.043 W (30%) | LUT RAM uses 36 mW less |
+| | *— BRAM Power* | 0.020 W (26% dyn) | 0.000 W (0% dyn) | LUT RAM eliminates BRAM power |
+| | *— Clocks Power* | 0.024 W (30% dyn) | 0.024 W (56% dyn) | Tie |
+| | *— Signals Power* | 0.019 W (25% dyn) | 0.010 W (24% dyn) | LUT RAM uses less signal power|
+| | *— Logic Power* | 0.010 W (13% dyn) | 0.007 W (15% dyn) | LUT RAM uses less logic power |
+| | *— DSP Power* | 0.005 W (7% dyn) | 0.002 W (4% dyn) | LUT RAM uses less DSP power |
+| **Timing (50 MHz Clock)** | **Worst Negative Slack (WNS)** | 1.865 ns | 2.033 ns | LUT RAM has slightly better WNS |
+| | **Worst Hold Slack (WHS)**| 0.061 ns | 0.066 ns | Comparable |
+| | **Worst Pulse Width Slack**| 9.750 ns | 9.000 ns | BRAM has better WPWS |
+| | **Timing Met?** | Yes | Yes | Tie |
+| **Performance (Simulation)**| **Total Inference Time** | 678,465.000 ns | 666,825.000 ns | LUT RAM finishes 11.64 µs faster |
+| | **Correct Digit Output** | 7 (Matched) | 7 (Matched) | Both functionally identical |
 
 ---
 
-## Key Architectural Differences
+## 2. Detailed Analysis of Variations
 
-### 1. BRAM Read Latency
+### 2.1 Resource Utilization Trade-offs
 
-Block RAM reads are **synchronous** — data is available 1 clock cycle after the address is presented. This required an **extra FSM state** (`S_POOL_PREFETCH`) in the BRAM conv_pool module for the pooling phase:
+The fundamental architectural difference between the two designs is entirely evident in the utilization reports.
 
-```
-BRAM:    S_POOL_PREFETCH → S_POOL_COMPARE → S_POOL_STORE  (POOL_SIZE + 2 cycles)
-LUT RAM: S_POOL_COMPARE → S_POOL_STORE                    (POOL_SIZE + 1 cycles)
-```
+- **BRAM Variant:** Uses **20 BRAM tiles** to store the CNN's parameters (weights, biases) and intermediate convolution buffers. Because dedicated silicon is handling the memory, the general logic fabric usage is kept relatively low at **14,937 LUTs**.
+- **LUT RAM Variant:** Completely eliminates the use of Block RAM (**0 blocks**), shifting the entire memory burden to the FPGA's distributed logic fabric. Consequently, it requires **19,543 LUTs**—an increase of approximately 4,606 LUTs.
+- **Conclusion:** This highlights a classic FPGA design trade-off. If a design is constrained by logic cells (LUTs), shifting memory to BRAM is highly effective. Conversely, if a design is BRAM-starved (e.g., needed for large FIFOs or video buffers elsewhere), distributed LUT RAM provides a viable fallback, provided there is sufficient logic fabric available.
 
-The weight/bias reads are already pipelined for multiply timing in both variants, so no extra states were needed there.
+### 2.2 Power Consumption Anomalies
 
-### 2. Cycle Count Difference
+Prior expectations often suggest that distributing memory across thousands of logic cells (LUT RAM) increases dynamic power due to higher toggle rates and routing capacitance. However, the extracted Vivado power reports show the opposite for this specific implementation:
 
-| Phase                          | BRAM Variant          | LUT RAM Variant       | Difference         |
-| ------------------------------ | --------------------- | --------------------- | ------------------ |
-| Conv1+Pool1 (per filter)       | 780×8 + 195×6 = 7,410 | 780×8 + 195×5 = 7,215 | +195 cycles        |
-| Conv1+Pool1 (total, 4 filters) | 29,640                | 28,860                | +780               |
-| Conv2+Pool2 (per filter)       | 193×15 + 48×6 = 3,183 | 193×15 + 48×5 = 3,135 | +48 cycles         |
-| Conv2+Pool2 (total, 8 filters) | 25,464                | 25,080                | +384               |
-| FC1                            | ~12,416               | ~12,416               | 0                  |
-| FC2                            | ~360                  | ~360                  | 0                  |
-| **Total**                      | **~67,880**           | **~66,716**           | **+1,164 (~1.7%)** |
+- The **Total Dynamic Power** for the BRAM version is significantly higher (0.079 W) compared to the LUT RAM version (0.043 W).
+- The primary culprit is the BRAM itself, which consumes **0.020 W** just for memory operations.
+- Furthermore, the **Signals Power** is higher in the BRAM version (0.019 W vs 0.010 W), likely due to the longer routing required to physically connect the logic fabric to the hard BRAM blocks located in specific columns on the FPGA die. The LUT RAM integrates memory directly adjacent to the logic querying it, potentially shortening signal paths and reducing capacitance in this specific low-frequency (50 MHz) design.
 
-The BRAM latency penalty is negligible (1.7% more cycles).
+### 2.3 Timing and Clock Closure
 
-### 3. Resource Usage (Expected)
+Both designs easily met the 50 MHz (20.0 ns period) timing constraint.
 
-| Resource             | BRAM Variant                 | LUT RAM Variant           |
-| -------------------- | ---------------------------- | ------------------------- |
-| **BRAM36k**          | ~13 blocks (9.3% of xc7z020) | **0 blocks**              |
-| **LUT6** (for ROM)   | ~0 (weight storage in BRAM)  | ~7,300 (13.7% of xc7z020) |
-| **LUT6** (for logic) | Similar                      | Similar                   |
-| **DSP48**            | 1-2                          | 1-2                       |
-| **FF**               | Similar                      | Similar                   |
+- The **LUT RAM** implementation achieved a slightly better Setup Slack (WNS of **2.033 ns** vs **1.865 ns** for BRAM). While BRAM provides dedicated, optimized routing, it also imposes fixed physical locations on the die. If the MAC (Multiply-Accumulate) units are not physically close to the BRAM columns, the routing delay can eat into the slack. LUT RAM allows the synthesis tool to place the memory cells immediately next to the DSP slices, which appears to have slightly benefited the critical path in this run.
 
-**Key observations:**
+### 2.4 Performance and Inference Latency
 
-- **BRAM variant** saves thousands of LUTs by offloading weight storage to dedicated BRAM tiles
-- **LUT RAM variant** uses zero BRAM but consumes a large fraction of available LUTs
-- Both share the same DSP usage (1 multiply unit, time-multiplexed)
-- Timing closure may be harder for LUT RAM due to large address MUXes on FC1's 12,288-entry ROM
+The simulation waveforms confirm a tangible difference in execution speed:
 
-### 4. Timing
+- **LUT RAM** completed the inference at **666,825 ns**.
+- **BRAM** completed the inference at **678,465 ns**.
+- **Reasoning:** As documented in the project structure, BRAM operations are strictly synchronous. Reading a value requires presenting the address and waiting for the next clock edge to sample the data. This requires an extra FSM state (e.g., `S_POOL_PREFETCH`) during pooling or memory-fetching phases. LUT RAM behaves as asynchronous combinational logic on reads (the data appears sequentially after the address propagates), allowing the FSM to skip the prefetch cycle. Over the thousands of operations required for a CNN inference, these saved cycles compound, allowing the LUT RAM variant to finish roughly 1.7% (~11.6 µs) faster.
 
-- **BRAM**: Weight reads go through BRAM output registers → shorter combinational paths → easier timing closure
-- **LUT RAM**: Address lines fan out to thousands of LUT6 → longer combinational paths → may need slower clock or deeper pipelining for FC1 weight ROM
+### Final Summary
 
-### 5. Timing Fix — Argmax Pipeline & FC2 Datapath Narrowing
-
-After implementation on xc7z020, **both variants** showed **4 setup violations** on the 4 bits of `pred_out`:
-
-| Variant     | WNS       | TNS       | Failing Endpoints |
-| ----------- | --------- | --------- | ----------------- |
-| **BRAM**    | −2.566 ns | −9.695 ns | 4 / 84,656        |
-| **LUT RAM** | −2.399 ns | −9.180 ns | 4 / 90,700        |
-
-Hold timing and pulse width were satisfied in both cases. Two root causes were identified and fixed in **both** variants:
-
-**Issue 1 — Single-cycle argmax chain:** The original synthesis wrappers computed argmax over 10 outputs (48-bit signed values) in a single combinational block with 9 sequential comparisons. Each comparison creates a data dependency, resulting in a ~23 ns combinational path that exceeded the 20.5 ns clock period.
-
-**Fix:** Replaced with a **2-stage pipelined argmax tree** (in both `cnn1d_synth_top_bram.sv` and `cnn1d_synth_top_lutram.sv`):
-
-- Stage 1: Two parallel groups — `max(cnn_out[0:4])` and `max(cnn_out[5:9])` (4 comparisons each, registered)
-- Stage 2: Final comparison of the two winners (1 comparison, registered to `pred_out`)
-
-Max combinational depth reduced from 9 to 4 comparisons (~10 ns, well within budget).
-
-**Issue 2 — Wide FC2 multiply:** FC1 output was 40 bits, making FC2's multiply 40×32 = 73 bits — requiring multiple cascaded DSP48E1 blocks (native: 25×18) with long carry routing.
-
-**Fix:** Truncated FC1→FC2 data from 40 to 32 bits in both `cnn_top_bram.sv` and `cnn_top_lutram.sv`. FC1 has ReLU (non-negative outputs), and actual values fit well within 32 bits. This keeps FC2's multiply at 32×32 (2-DSP cascade, shorter path) and narrows `cnn_out` from 48 to 40 bits, further helping argmax timing.
-
-### 6. Power
-
-- **BRAM**: Lower dynamic power for memory reads (BRAM is optimized for sequential access)
-- **LUT RAM**: Higher toggle activity in LUT fabric → higher dynamic power for weight reads
+Both designs achieve identical mathematical results and correctly identify the MNIST digit. The **BRAM variant** is heavily favored if logic footprint (LUTs) must be minimized. However, in this specific constrained environment (50 MHz clock), the **LUT RAM variant** surprisingly proves to be slightly faster, less power-hungry, and easier on timing, at the sole cost of a ~30% increase in LUT usage.
 
 ---
 
@@ -307,11 +273,15 @@ launch_simulation: Time (s): cpu = 00:00:04 ; elapsed = 00:00:25 . Memory (MB): 
 
 ![BRAM Simulation Waveform](images/bram/waveform.jpeg)
 
+> Inference completes at 678,465 ns. All 10 logit outputs stable; digit 7 detected (logit = 855,640).
+
 &nbsp;
 
 ## BRAM: Schematic
 
 ![BRAM Schematic](images/bram/schematic.jpeg)
+
+> Synthesized design schematic — 20 BRAM blocks used for weight/bias/buffer storage, 20 DSP48 slices for MAC operations.
 
 &nbsp;
 
@@ -319,16 +289,7 @@ launch_simulation: Time (s): cpu = 00:00:04 ; elapsed = 00:00:25 . Memory (MB): 
 
 ![BRAM Utilization Report](images/bram/utilization.jpeg)
 
-**Expected key metrics:**
-
-| Resource | Used | Available | Utilization |
-| -------- | ---- | --------- | ----------- |
-| LUT      | —    | 53,200    | —           |
-| FF       | —    | 106,400   | —           |
-| BRAM36k  | ~13  | 140       | ~9.3%       |
-| DSP48    | 1–2  | 220       | <1%         |
-
-> Fill in actual values after running synthesis on `cnn1d_synth_top_bram` targeting `xc7z020clg484-1`.
+> 14,937 LUTs (28.08%), 40,362 FFs (37.93%), 20 BRAM36k (14.29%), 20 DSP48 (9.09%).
 
 &nbsp;
 
@@ -336,17 +297,7 @@ launch_simulation: Time (s): cpu = 00:00:04 ; elapsed = 00:00:25 . Memory (MB): 
 
 ![BRAM Timing Summary](images/bram/timing.jpeg)
 
-**Expected key metrics:**
-
-| Metric                     | Value                   |
-| -------------------------- | ----------------------- |
-| Target clock               | 50 MHz (20.0 ns period) |
-| Constraint                 | 20.5 ns                 |
-| WNS (Worst Negative Slack) | —                       |
-| WHS (Worst Hold Slack)     | —                       |
-| Timing Met?                | —                       |
-
-> Fill in actual values from your Vivado timing report.
+> Timing met at 50 MHz — WNS = +1.865 ns, WHS = +0.061 ns.
 
 &nbsp;
 
@@ -354,18 +305,7 @@ launch_simulation: Time (s): cpu = 00:00:04 ; elapsed = 00:00:25 . Memory (MB): 
 
 ![BRAM Power Report](images/bram/power.jpeg)
 
-**Expected key metrics:**
-
-| Component           | Power |
-| ------------------- | ----- |
-| Total On-Chip Power | —     |
-| Dynamic Power       | —     |
-| Static Power        | —     |
-| BRAM Power          | —     |
-| Logic Power         | —     |
-| Signal Power        | —     |
-
-> Fill in actual values from your Vivado power report.
+> Total on-chip power: 0.184 W (dynamic 0.079 W, static 0.105 W). BRAM contributes 0.020 W (26% of dynamic).
 
 ---
 
@@ -452,11 +392,15 @@ launch_simulation: Time (s): cpu = 00:00:08 ; elapsed = 00:00:11 . Memory (MB): 
 
 ![LUT RAM Simulation Waveform](images/lutram/waveform.jpeg)
 
+> Inference completes at 666,825 ns — 11.64 µs faster than BRAM. Identical logit outputs; digit 7 detected.
+
 &nbsp;
 
 ## LUT RAM: Schematic
 
 ![LUT RAM Schematic](images/lutram/schematic.jpeg)
+
+> Synthesized design schematic — 0 BRAM blocks; all weight storage mapped to distributed LUT fabric, 20 DSP48 slices.
 
 &nbsp;
 
@@ -464,17 +408,7 @@ launch_simulation: Time (s): cpu = 00:00:08 ; elapsed = 00:00:11 . Memory (MB): 
 
 ![LUT RAM Utilization Report](images/lutram/utilization.jpeg)
 
-**Expected key metrics:**
-
-| Resource | Used | Available | Utilization |
-| -------- | ---- | --------- | ----------- |
-| LUT      | —    | 53,200    | —           |
-| FF       | —    | 106,400   | —           |
-| BRAM36k  | 0    | 140       | 0%          |
-| DSP48    | 1–2  | 220       | <1%         |
-
-> Fill in actual values after running synthesis on `cnn1d_synth_top_lutram` targeting `xc7z020clg484-1`.
-> LUT count should be significantly higher than the BRAM variant due to distributed ROM for FC1 weights.
+> 19,543 LUTs (36.73%), 40,578 FFs (38.14%), 0 BRAM (0%), 20 DSP48 (9.09%). ~4,606 more LUTs than BRAM variant.
 
 &nbsp;
 
@@ -482,17 +416,7 @@ launch_simulation: Time (s): cpu = 00:00:08 ; elapsed = 00:00:11 . Memory (MB): 
 
 ![LUT RAM Timing Summary](images/lutram/timing.jpeg)
 
-**Expected key metrics:**
-
-| Metric                     | Value                   |
-| -------------------------- | ----------------------- |
-| Target clock               | 50 MHz (20.0 ns period) |
-| Constraint                 | 20.5 ns                 |
-| WNS (Worst Negative Slack) | —                       |
-| WHS (Worst Hold Slack)     | —                       |
-| Timing Met?                | —                       |
-
-> Fill in actual values. WNS may be tighter than BRAM variant due to large distributed ROM address fan-out.
+> Timing met at 50 MHz — WNS = +2.033 ns, WHS = +0.066 ns. Slightly better setup slack than BRAM.
 
 &nbsp;
 
@@ -500,110 +424,4 @@ launch_simulation: Time (s): cpu = 00:00:08 ; elapsed = 00:00:11 . Memory (MB): 
 
 ![LUT RAM Power Report](images/lutram/power.jpeg)
 
-**Expected key metrics:**
-
-| Component           | Power |
-| ------------------- | ----- |
-| Total On-Chip Power | —     |
-| Dynamic Power       | —     |
-| Static Power        | —     |
-| BRAM Power          | 0 W   |
-| Logic Power         | —     |
-| Signal Power        | —     |
-
-> Fill in actual values. Logic power should be higher than BRAM variant; BRAM power should be 0 W.
-
----
-
----
-
-# Side-by-Side Comparison
-
-## Comparison Table (Fill After Synthesis)
-
-| Metric                    | BRAM-Only | LUT RAM-Only | Winner                 |
-| ------------------------- | --------- | ------------ | ---------------------- |
-| **LUT Used**              | —         | —            | —                      |
-| **FF Used**               | —         | —            | —                      |
-| **BRAM36k Used**          | ~13       | 0            | LUT RAM (saves BRAM)   |
-| **DSP48 Used**            | 1–2       | 1–2          | Tie                    |
-| **WNS (ns)**              | —         | —            | —                      |
-| **Total Power (W)**       | —         | —            | —                      |
-| **Dynamic Power (W)**     | —         | —            | —                      |
-| **Inference Cycles**      | ~67,880   | ~66,716      | LUT RAM (1.7% fewer)   |
-| **Conv1+Pool1 Time**      | 296.4 ms  | 288.6 ms     | LUT RAM (2.6% faster)  |
-| **Conv2+Pool2 Time**      | 254.7 ms  | 250.8 ms     | LUT RAM (1.5% faster)  |
-| **FC1 Time**              | 123.9 ms  | 123.9 ms     | Tie                    |
-| **Total Inference (sim)** | ~675.0 ms | ~663.3 ms    | LUT RAM (~1.7% faster) |
-
-> Fill in the "—" cells after running both variants through synthesis and implementation.
-
-## What to Observe
-
-1. **BRAM variant** should show ~13 BRAM36k blocks used, significantly fewer LUTs
-2. **LUT RAM variant** should show 0 BRAM blocks, but substantially more LUTs for weight ROM
-3. **Timing**: BRAM variant likely has better WNS (shorter paths through dedicated BRAM)
-4. **Power**: BRAM variant likely has lower dynamic power for memory reads
-5. **Inference results**: Both produce **identical** logit values and predictions — **confirmed** (all 10 outputs match exactly)
-6. **Inference latency**: LUT RAM is ~1.7% faster (no BRAM pool prefetch overhead) — **confirmed** from waveform analysis:
-   - **BRAM**: CNN output values stored and completed by **678,465,000 ns** (~678.5 ms)
-   - **LUT RAM**: CNN output values stored and completed by **666,825,000 ns** (~666.8 ms)
-   - **Difference**: LUT RAM finishes **11.64 ms earlier** (~1.7%), confirming that the absence of the `S_POOL_PREFETCH` state in the LUT RAM FSM saves cycles during pooling phases
-
----
-
----
-
-# Screenshot Guide
-
-## Required Image Files
-
-Drop your Vivado screenshots into the `images/` subfolders using **exactly these filenames**:
-
-| File                | BRAM Path                      | LUT RAM Path                     |
-| ------------------- | ------------------------------ | -------------------------------- |
-| Simulation waveform | `images/bram/waveform.jpeg`    | `images/lutram/waveform.jpeg`    |
-| Schematic           | `images/bram/schematic.jpeg`   | `images/lutram/schematic.jpeg`   |
-| Utilization report  | `images/bram/utilization.jpeg` | `images/lutram/utilization.jpeg` |
-| Timing summary      | `images/bram/timing.jpeg`      | `images/lutram/timing.jpeg`      |
-| Power report        | `images/bram/power.jpeg`       | `images/lutram/power.jpeg`       |
-
-## How to Capture Each Screenshot
-
-### Simulation Waveform
-
-1. Set testbench as simulation top (`tb_cnn_bram` or `tb_cnn_lutram`)
-2. Copy/symlink `cnn_weights/` into `<project>.sim/sim_1/behav/xsim/`
-3. Run Simulation → Tcl console: `run 900000ns` (BRAM) or `run 800000ns` (LUT RAM)
-4. Add `rstn`, `clk`, `done`, and the 10 output logit signals to waveform
-5. Screenshot the full inference from reset release to final output
-6. Also copy the Tcl console text output (shown in "Console Output" sections above)
-
-### Utilization Report
-
-1. Open Synthesized Design → Report Utilization
-2. Screenshot the Summary table showing LUT, FF, BRAM, DSP counts
-3. Note: Expand "Memory" section to see BRAM36k vs BRAM18k breakdown
-
-### Timing Summary
-
-1. Open Implemented Design → Report Timing Summary
-2. Screenshot showing WNS, WHS, and clock constraint
-3. Note: Check the "Intra-Clock Paths" section for the `clk` domain
-
-### Power Report
-
-1. Open Implemented Design → Report Power
-2. Screenshot the Summary showing Total, Dynamic, Static, and per-component breakdown
-3. Note: Expand to see BRAM vs Logic vs Signal power components
-
----
-
----
-
-## Design Notes
-
-- **Small arrays**: Vivado may ignore `(* ram_style = "block" *)` for very small arrays (e.g., 4-entry bias ROM) and map them to distributed RAM regardless. This is expected — the tool optimizes for efficiency.
-- **BRAM ports**: Block RAM is dual-ported. Our sequential design only needs single-port access, so no port contention issues.
-- **FC1 dominates**: FC1's 12,288 weights are ~85% of total weight storage. This is where the BRAM vs LUT RAM difference is most visible.
-- **Synthesizability**: Both designs are fully synthesizable. No `$display`, `$finish`, or other simulation-only constructs in RTL modules.
+> Total on-chip power: 0.147 W (dynamic 0.043 W, static 0.103 W). No BRAM power; 37 mW less than BRAM variant.

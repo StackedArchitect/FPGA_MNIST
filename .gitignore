@@ -25,3 +25,5 @@ python_files/MNIST/
 # OS junk
 .DS_Store
 Thumbs.db
+# Ignore MNIST dataset (downloaded at runtime)
+cnn_2d_new/software/data/

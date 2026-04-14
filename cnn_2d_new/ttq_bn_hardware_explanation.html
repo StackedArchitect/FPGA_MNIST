@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTQ+BN CNN Hardware — Interactive Deep Dive</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e17; --bg2: #111827; --bg3: #1a2035;
+    --surface: #1e2a3a; --surface2: #243447;
+    --border: #2d3f55; --border2: #3a5068;
+    --text: #e8ecf4; --text2: #94a3b8; --text3: #64748b;
+    --accent: #6366f1; --accent2: #818cf8; --accent3: #a78bfa;
+    --green: #34d399; --green2: #10b981;
+    --amber: #fbbf24; --amber2: #f59e0b;
+    --red: #f87171; --red2: #ef4444;
+    --cyan: #22d3ee; --teal: #2dd4bf;
+    --pink: #f472b6;
+    --radius: 12px; --radius-sm: 8px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ── */
+  nav {
+    position: fixed; top:0; left:0; right:0; z-index:100;
+    background: rgba(11,14,23,0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 40px;
+    display: flex; align-items: center; gap: 24px;
+  }
+  nav .logo { font-weight:800; font-size:18px; color:var(--accent2);
+    display:flex; align-items:center; gap:8px; }
+  nav .logo span { font-size:12px; color:var(--text3); font-weight:400; }
+  nav a { color:var(--text2); text-decoration:none; font-size:14px; font-weight:500;
+    transition: color 0.2s; }
+  nav a:hover { color:var(--accent2); }
+
+  /* ── HERO ── */
+  .hero {
+    padding: 120px 40px 60px;
+    text-align: center;
+    background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+    position: relative;
+  }
+  .hero::after { content:''; position:absolute; bottom:0; left:0; right:0;
+    height:1px; background:linear-gradient(90deg, transparent, var(--accent), transparent); }
+  .hero h1 { font-size:clamp(28px,4vw,48px); font-weight:800;
+    background: linear-gradient(135deg, var(--accent2), var(--cyan), var(--teal));
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:12px; }
+  .hero .sub { color:var(--text2); font-size:18px; max-width:700px; margin:0 auto 20px; }
+  .badge-row { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:6px 14px;
+    border-radius:20px; font-size:12px; font-weight:600; border:1px solid var(--border); }
+  .badge.green { background:rgba(52,211,153,.1); border-color:var(--green); color:var(--green); }
+  .badge.amber { background:rgba(251,191,36,.1); border-color:var(--amber); color:var(--amber); }
+  .badge.purple { background:rgba(167,139,250,.1); border-color:var(--accent3); color:var(--accent3); }
+
+  /* ── CONTAINER ── */
+  .container { max-width:1100px; margin:0 auto; padding:60px 24px; }
+
+  /* ── SECTION ── */
+  section { margin-bottom:80px; }
+  section h2 { font-size:28px; font-weight:700; margin-bottom:8px;
+    display:flex; align-items:center; gap:12px; }
+  section h2 .num { display:inline-flex; align-items:center; justify-content:center;
+    width:36px; height:36px; border-radius:10px; background:var(--accent);
+    color:white; font-size:15px; font-weight:700; flex-shrink:0; }
+  section .section-desc { color:var(--text2); margin-bottom:32px; font-size:15px; }
+  h3 { font-size:20px; font-weight:600; margin: 28px 0 12px; color:var(--accent2); }
+  h4 { font-size:16px; font-weight:600; margin: 20px 0 8px; color:var(--teal); }
+
+  /* ── CARD ── */
+  .card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:28px; margin-bottom:20px;
+    transition: border-color .3s, box-shadow .3s;
+  }
+  .card:hover { border-color:var(--accent); box-shadow:0 0 30px rgba(99,102,241,.08); }
+  .card-title { font-size:16px; font-weight:700; margin-bottom:8px; display:flex;
+    align-items:center; gap:8px; }
+  .card-title .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+  /* ── TABLE ── */
+  table { width:100%; border-collapse:collapse; margin:16px 0; font-size:14px; }
+  th { text-align:left; padding:10px 14px; background:var(--bg2); color:var(--text2);
+    font-weight:600; border-bottom:2px solid var(--border); font-size:12px;
+    text-transform:uppercase; letter-spacing:0.5px; }
+  td { padding:10px 14px; border-bottom:1px solid var(--border); }
+  tr:hover td { background:rgba(99,102,241,.03); }
+
+  /* ── CODE ── */
+  pre, code { font-family:'JetBrains Mono', monospace; }
+  pre { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:20px; overflow-x:auto; font-size:13px; line-height:1.6; margin:12px 0; }
+  code { font-size:13px; }
+  .kw { color:var(--accent2); font-weight:600; }
+  .cm { color:var(--text3); }
+  .str { color:var(--green); }
+  .num { color:var(--amber); }
+  .op { color:var(--pink); }
+
+  /* ── FSM DIAGRAM ── */
+  .fsm-container { display:flex; flex-direction:column; gap:8px; margin:20px 0; }
+  .fsm-row { display:flex; align-items:center; gap:0; }
+  .fsm-state {
+    padding:10px 18px; border-radius:var(--radius-sm);
+    font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:600;
+    border:2px solid; cursor:pointer; transition: all .3s;
+    min-width:140px; text-align:center; position:relative;
+  }
+  .fsm-state:hover { transform:scale(1.05); z-index:2; }
+  .fsm-arrow {
+    width:40px; text-align:center; color:var(--text3); font-size:20px; flex-shrink:0;
+  }
+  .fsm-state.idle { background:rgba(148,163,184,.1); border-color:var(--text3); color:var(--text2); }
+  .fsm-state.compute { background:rgba(99,102,241,.15); border-color:var(--accent); color:var(--accent2); }
+  .fsm-state.drain { background:rgba(251,191,36,.1); border-color:var(--amber); color:var(--amber); }
+  .fsm-state.scale { background:rgba(244,114,182,.12); border-color:var(--pink); color:var(--pink); }
+  .fsm-state.bn { background:rgba(34,211,238,.1); border-color:var(--cyan); color:var(--cyan); }
+  .fsm-state.store { background:rgba(52,211,153,.1); border-color:var(--green); color:var(--green); }
+  .fsm-state.pool { background:rgba(251,146,60,.1); border-color:#fb923c; color:#fb923c; }
+  .fsm-state.done { background:rgba(167,139,250,.12); border-color:var(--accent3); color:var(--accent3); }
+  .fsm-state .cyc { font-size:10px; font-weight:400; display:block; opacity:.7; }
+
+  .fsm-detail {
+    display:none; background:var(--bg2); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:16px 20px; margin-top:8px;
+    font-size:13px; line-height:1.7; animation: fadeIn .3s;
+  }
+  .fsm-detail.active { display:block; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:none} }
+
+  /* ── EXAMPLE TRACE ── */
+  .trace-step {
+    background:var(--bg2); border-left:3px solid var(--accent);
+    padding:14px 20px; margin:10px 0; border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+    font-size:13px;
+  }
+  .trace-step .label { font-weight:700; color:var(--accent2); margin-bottom:4px; }
+  .trace-step .math { font-family:'JetBrains Mono',monospace; color:var(--text);
+    background:var(--bg); padding:8px 12px; border-radius:6px; margin-top:6px;
+    display:block; font-size:12px; overflow-x:auto; }
+
+  /* ── TABS ── */
+  .tabs { display:flex; gap:4px; margin-bottom:0; }
+  .tab { padding:10px 20px; background:var(--bg2); border:1px solid var(--border);
+    border-bottom:none; border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+    cursor:pointer; font-size:13px; font-weight:600; color:var(--text3);
+    transition: all .2s; }
+  .tab.active { background:var(--surface); color:var(--accent2); border-color:var(--accent); }
+  .tab-content { display:none; }
+  .tab-content.active { display:block; border-top:1px solid var(--accent); }
+
+  /* ── PIPELINE VIS ── */
+  .pipeline {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+    gap:12px; margin:20px 0;
+  }
+  .pipe-stage {
+    background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:14px; text-align:center; position:relative;
+    transition: all .3s;
+  }
+  .pipe-stage:hover { border-color:var(--accent); transform:translateY(-3px);
+    box-shadow:0 8px 25px rgba(99,102,241,.12); }
+  .pipe-stage .icon { font-size:24px; margin-bottom:6px; }
+  .pipe-stage .name { font-size:12px; font-weight:700; color:var(--accent2); }
+  .pipe-stage .detail { font-size:11px; color:var(--text3); margin-top:4px; }
+  .pipe-stage::after { content:'→'; position:absolute; right:-12px; top:50%;
+    transform:translateY(-50%); color:var(--text3); font-size:16px; }
+  .pipe-stage:last-child::after { content:''; }
+
+  /* ── GRID ── */
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  @media(max-width:768px) { .grid-2{grid-template-columns:1fr;} }
+
+  /* ── HIGHLIGHT ── */
+  .hi { color:var(--accent2); font-weight:600; }
+  .hi-green { color:var(--green); font-weight:600; }
+  .hi-amber { color:var(--amber); font-weight:600; }
+  .hi-pink { color:var(--pink); font-weight:600; }
+  .hi-cyan { color:var(--cyan); font-weight:600; }
+
+  /* ── ACCORDION ── */
+  .accordion { margin:12px 0; }
+  .acc-header {
+    padding:14px 20px; background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius-sm); cursor:pointer; font-weight:600;
+    font-size:14px; display:flex; align-items:center; justify-content:space-between;
+    transition: all .2s; user-select:none;
+  }
+  .acc-header:hover { border-color:var(--accent); }
+  .acc-header .arr { transition: transform .3s; }
+  .acc-header.open .arr { transform:rotate(180deg); }
+  .acc-body { display:none; padding:16px 20px; background:var(--bg2);
+    border:1px solid var(--border); border-top:none;
+    border-radius:0 0 var(--radius-sm) var(--radius-sm); animation:fadeIn .3s; }
+  .acc-body.open { display:block; }
+
+  /* ── FOOTER ── */
+  footer { text-align:center; padding:40px; color:var(--text3); font-size:13px;
+    border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<!-- ═══════ NAV ═══════ -->
+<nav>
+  <div class="logo">⚡ TTQ+BN CNN <span>Hardware Deep Dive</span></div>
+  <a href="#overview">Overview</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#conv-fsm">Conv FSM</a>
+  <a href="#fc-fsm">FC FSM</a>
+  <a href="#example">Worked Example</a>
+  <a href="#comparison">Comparison</a>
+</nav>
+
+<!-- ═══════ HERO ═══════ -->
+<div class="hero">
+  <h1>TTQ + BatchNorm CNN on FPGA</h1>
+  <p class="sub">A complete hardware walkthrough of the Trained Ternary Quantization inference pipeline — from MNIST pixel input to digit classification on a Zynq-7020.</p>
+  <div class="badge-row">
+    <span class="badge green">✓ Simulation PASS</span>
+    <span class="badge amber">97.28% Accuracy</span>
+    <span class="badge purple">15.7× Weight Compression</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ═══════ 1. OVERVIEW ═══════ -->
+<section id="overview">
+  <h2><span class="num">1</span> What is TTQ?</h2>
+  <p class="section-desc">Trained Ternary Quantization constrains every weight to one of three values — but unlike simple ternary (TWN), the positive and negative magnitudes are <em>learned</em> independently.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title"><span class="dot" style="background:var(--red)"></span>TWN (Ternary Weight Network)</div>
+      <p style="font-size:14px;color:var(--text2)">Weights ∈ <code>{-1, 0, +1}</code><br>Symmetric — positive and negative weights have equal magnitude.<br>Result: <span class="hi-pink">acc += activation</span> or <span class="hi-pink">acc -= activation</span></p>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="dot" style="background:var(--green)"></span>TTQ (Trained Ternary Quantization)</div>
+      <p style="font-size:14px;color:var(--text2)">Weights ∈ <code>{-Wn, 0, +Wp}</code><br>Asymmetric — <span class="hi">Wp</span> and <span class="hi">Wn</span> are learned per layer.<br>Result: <span class="hi-green">Wp × Σ(pos activations) − Wn × Σ(neg activations)</span></p>
+    </div>
+  </div>
+
+  <h3>Why it matters for FPGA</h3>
+  <div class="card">
+    <table>
+      <tr><th>Aspect</th><th>Full Precision</th><th>TWN+BN</th><th>TTQ+BN</th></tr>
+      <tr><td>Weight bits</td><td>32 (float)</td><td><span class="hi-green">2</span></td><td><span class="hi-green">2</span> + 2 scalars</td></tr>
+      <tr><td>MAC multiply</td><td>1 per tap</td><td><span class="hi-green">0</span></td><td><span class="hi-green">0</span></td></tr>
+      <tr><td>Extra DSP48</td><td>—</td><td>1/layer (BN)</td><td>3/layer (Wp,Wn,BN)</td></tr>
+      <tr><td>Weight memory</td><td>28,176 B</td><td>1,761 B</td><td>1,793 B</td></tr>
+      <tr><td>Test accuracy</td><td>98.35%</td><td>95.85%</td><td><span class="hi">97.28%</span></td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════ 2. ARCHITECTURE ═══════ -->
+<section id="architecture">
+  <h2><span class="num">2</span> Network Architecture & Data Flow</h2>
+  <p class="section-desc">The network processes a 28×28 MNIST image through 4 layers, chained by done signals.</p>
+
+  <div class="pipeline">
+    <div class="pipe-stage"><div class="icon">🖼️</div><div class="name">Input</div><div class="detail">28×28×1<br>Q16.16</div></div>
+    <div class="pipe-stage"><div class="icon">🔲</div><div class="name">Conv1+Pool1</div><div class="detail">4 filters, 3×3<br>→ 13×13×4</div></div>
+    <div class="pipe-stage"><div class="icon">🔲</div><div class="name">Conv2+Pool2</div><div class="detail">8 filters, 3×3<br>→ 5×5×8</div></div>
+    <div class="pipe-stage"><div class="icon">🔗</div><div class="name">FC1 (BN+ReLU)</div><div class="detail">200→32<br>HAS_BN=1</div></div>
+    <div class="pipe-stage"><div class="icon">🎯</div><div class="name">FC2 (logits)</div><div class="detail">32→10<br>HAS_BN=0</div></div>
+    <div class="pipe-stage"><div class="icon">🏆</div><div class="name">Argmax</div><div class="detail">Predicted<br>Digit 0-9</div></div>
+  </div>
+
+  <h3>RTL Module Hierarchy</h3>
+  <pre><span class="kw">cnn2d_top_ttq</span>
+  ├── <span class="str">conv_pool_2d_ttq</span> #Conv1  <span class="cm">// rstn = global reset</span>
+  │     <span class="cm">// S_IDLE → S_CONV_COMPUTE → S_CONV_DRAIN → S_CONV_SCALE</span>
+  │     <span class="cm">//       → S_CONV_BN → S_CONV_STORE → S_POOL_COMPARE → S_POOL_STORE → S_DONE</span>
+  │
+  ├── <span class="str">conv_pool_2d_ttq</span> #Conv2  <span class="cm">// rstn = pool1_done (chain!)</span>
+  │
+  ├── <span class="cm">[flatten + zero-pad]</span>     <span class="cm">// 200 values → 240 (20 zeros each side)</span>
+  │
+  ├── <span class="str">layer_seq_ttq</span> #FC1     <span class="cm">// rstn = pool2_done, HAS_BN=1</span>
+  │     <span class="cm">// S_IDLE → S_FILL → S_MAC → S_DRAIN → S_SCALE → S_BN → S_STORE → S_DONE</span>
+  │
+  ├── <span class="cm">[zero-pad]</span>              <span class="cm">// 32 values → 72 (20 zeros each side)</span>
+  │
+  └── <span class="str">layer_seq_ttq</span> #FC2     <span class="cm">// rstn = fc1_done, HAS_BN=0</span>
+        <span class="cm">// S_IDLE → S_FILL → S_MAC → S_DRAIN → S_SCALE → S_STORE → S_DONE</span></pre>
+
+  <div class="card" style="border-color:var(--amber);">
+    <div class="card-title"><span class="dot" style="background:var(--amber)"></span>Layer Chaining</div>
+    <p style="font-size:14px;color:var(--text2)">Each layer's <code>done</code> signal is wired to the next layer's <code>rstn</code>. While Conv1 is running, Conv2/FC1/FC2 are held in reset. When Conv1 finishes, <code>pool1_done</code> goes high — releasing Conv2. This creates a sequential, zero-overlap pipeline: Conv1 → Conv2 → FC1 → FC2.</p>
+  </div>
+</section>
+
+<!-- ═══════ 3. CONV FSM ═══════ -->
+<section id="conv-fsm">
+  <h2><span class="num">3</span> Conv+Pool FSM (<code>conv_pool_2d_ttq</code>)</h2>
+  <p class="section-desc">This module fuses convolution, TTQ scaling, BatchNorm, ReLU, and max-pooling into a single 9-state FSM. Click each state to see details.</p>
+
+  <div class="fsm-container">
+    <div class="fsm-row" style="flex-wrap:wrap; gap:8px;">
+      <div class="fsm-state idle" onclick="toggleFSM('conv',0)">S_IDLE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state compute" onclick="toggleFSM('conv',1)">S_CONV_COMPUTE<span class="cyc">TAP_COUNT cy</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state drain" onclick="toggleFSM('conv',2)">S_CONV_DRAIN<span class="cyc">2 cycles</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state scale" onclick="toggleFSM('conv',3)">S_CONV_SCALE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state bn" onclick="toggleFSM('conv',4)">S_CONV_BN<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state store" onclick="toggleFSM('conv',5)">S_CONV_STORE<span class="cyc">1 cycle</span></div>
+    </div>
+    <div style="text-align:center; color:var(--text3); font-size:13px; margin:4px 0;">↕ Repeat for all positions, then ↓</div>
+    <div class="fsm-row" style="gap:8px;">
+      <div class="fsm-state pool" onclick="toggleFSM('conv',6)">S_POOL_COMPARE<span class="cyc">4 cycles/pos</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state store" onclick="toggleFSM('conv',7)">S_POOL_STORE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state done" onclick="toggleFSM('conv',8)">S_DONE<span class="cyc">holds</span></div>
+    </div>
+  </div>
+
+  <!-- FSM Details -->
+  <div id="conv-fsm-0" class="fsm-detail">
+    <h4>S_IDLE — Initialisation</h4>
+    <p>Resets all counters: <code>filter_idx=0, conv_out_row=0, conv_out_col=0, conv_pos=0, ch_cnt=0, kr_cnt=0, kc_cnt=0</code>. Zeros <code>pos_acc</code> and <code>neg_acc</code>. Transitions immediately to <code>S_CONV_COMPUTE</code>.</p>
+  </div>
+  <div id="conv-fsm-1" class="fsm-detail">
+    <h4>S_CONV_COMPUTE — Split Ternary Accumulation</h4>
+    <p>This is the MAC core. Each cycle, the pipeline stage reads:</p>
+    <pre><span class="kw">p1_data</span> ← data_in[ch * H*W + (row+kr)*W + (col+kc)]   <span class="cm">// activation</span>
+<span class="kw">p1_code</span> ← weights[filter * TAP_COUNT + tap_idx]         <span class="cm">// ternary code</span></pre>
+    <p>One cycle later (<code>pipe_s1_valid</code>), the accumulation fires:</p>
+    <pre><span class="kw">case</span> (p1_code)
+  2'b01: <span class="str">pos_acc</span> <= pos_acc + p1_data;   <span class="cm">// weight = +1 → add to positive sum</span>
+  2'b11: <span class="str">neg_acc</span> <= neg_acc + p1_data;   <span class="cm">// weight = -1 → add to negative sum</span>
+  default: ;                              <span class="cm">// weight =  0 → skip (free sparsity!)</span>
+<span class="kw">endcase</span></pre>
+    <p>The nested loop <code>(kc → kr → ch)</code> iterates over all <span class="hi">TAP_COUNT</span> kernel taps. For Conv1: 1×3×3 = 9 taps. For Conv2: 4×3×3 = 36 taps.</p>
+    <p><strong>Key insight:</strong> <em>No multiplier is used!</em> The MAC is reduced to conditional add/subtract because weights are ternary.</p>
+  </div>
+  <div id="conv-fsm-2" class="fsm-detail">
+    <h4>S_CONV_DRAIN — Pipeline Flush (2 cycles)</h4>
+    <p>The 1-stage pipeline means the last tap's data is still in <code>p1_data/p1_code</code> when <code>S_CONV_COMPUTE</code> exits. The drain state collects it:</p>
+    <pre><span class="cm">// drain_cnt=0:</span> collect last pipeline tap into pos_acc or neg_acc
+<span class="cm">// drain_cnt=1:</span> accumulators are final → transition to <span class="kw">S_CONV_SCALE</span></pre>
+  </div>
+  <div id="conv-fsm-3" class="fsm-detail">
+    <h4>S_CONV_SCALE — TTQ Wp/Wn Multiply + Bias (1 cycle) 🔑</h4>
+    <p>This is the <strong>key TTQ step</strong> — the only state that uses DSP multipliers in the MAC path:</p>
+    <pre><span class="kw">biased_reg</span> ← (<span class="str">Wp</span> × pos_acc_q16) >>> 16
+            − (<span class="str">Wn</span> × neg_acc_q16) >>> 16
+            + bias[filter_idx]</pre>
+    <p><code>pos_acc_q16 = pos_acc[31:0]</code> — the full Q16.16 value of the positive sum.</p>
+    <p><code>>>> 16</code> = arithmetic right shift — converts the 64-bit multiply product back to Q16.16.</p>
+    <p><strong>Hardware cost:</strong> 2 DSP48 slices (one for Wp×pos, one for Wn×neg), fired <em>once per output position</em> — not per tap. For Conv1 with 9 taps per position, this is 9× more efficient than full-precision MAC.</p>
+  </div>
+  <div id="conv-fsm-4" class="fsm-detail">
+    <h4>S_CONV_BN — Folded BatchNorm (1 cycle)</h4>
+    <p>Applies the pre-computed (folded) BatchNorm as a single multiply-add:</p>
+    <pre><span class="kw">bn_product_reg</span> ← (bn_scale[filter] × biased_q16) >>> 16</pre>
+    <p>Where <code>biased_q16 = biased_reg[31:0]</code> — Q16.16 value from S_CONV_SCALE.</p>
+    <p>The bn_shift is added combinationally: <code>bn_result = bn_product_reg + bn_shift[filter]</code></p>
+    <p><strong>BN folding:</strong> During training, BN computes <code>γ(x−μ)/√(σ²+ε) + β</code>. At export, this is folded into <code>scale = γ/√(σ²+ε)</code> and <code>shift = β − μ×scale</code>. Hardware just does <code>scale × x + shift</code>.</p>
+  </div>
+  <div id="conv-fsm-5" class="fsm-detail">
+    <h4>S_CONV_STORE — ReLU + Store to Conv Buffer (1 cycle)</h4>
+    <pre><span class="kw">if</span> (activation_function && bn_result > 0)
+    conv_buf[conv_pos] ← bn_result;    <span class="cm">// ReLU pass</span>
+<span class="kw">else if</span> (activation_function)
+    conv_buf[conv_pos] ← 0;            <span class="cm">// ReLU clamp negative → 0</span></pre>
+    <p>Resets <code>pos_acc=0, neg_acc=0</code> for the next output position.</p>
+    <p>If more positions remain: → <code>S_CONV_COMPUTE</code> (loop back).<br>
+    If all positions done for this filter: → <code>S_POOL_COMPARE</code> (start pooling).</p>
+  </div>
+  <div id="conv-fsm-6" class="fsm-detail">
+    <h4>S_POOL_COMPARE — Max Pool 2×2 (4 cycles per pool position)</h4>
+    <p>Iterates over the 2×2 window in the conv buffer, tracking the maximum:</p>
+    <pre><span class="kw">if</span> (conv_buf[pool_in_row * CONV_OUT_W + pool_in_col] > cur_max)
+    cur_max ← conv_buf[...];</pre>
+    <p>After all 4 elements compared → <code>S_POOL_STORE</code>.</p>
+  </div>
+  <div id="conv-fsm-7" class="fsm-detail">
+    <h4>S_POOL_STORE — Store pooled result</h4>
+    <p>Writes <code>cur_max</code> to the output array: <code>data_out[filter*POOL_OUT_POS + pool_pos]</code></p>
+    <p>If more pool positions: → <code>S_POOL_COMPARE</code><br>
+    If all pool positions done AND more filters: reset counters, → <code>S_CONV_COMPUTE</code> for next filter<br>
+    If all filters done: → <code>S_DONE</code></p>
+  </div>
+  <div id="conv-fsm-8" class="fsm-detail">
+    <h4>S_DONE — Signal completion</h4>
+    <p>Asserts <code>done=1</code>. This releases the next layer's reset.</p>
+  </div>
+</section>
+
+<!-- ═══════ 4. FC FSM ═══════ -->
+<section id="fc-fsm">
+  <h2><span class="num">4</span> FC Layer FSM (<code>layer_seq_ttq</code>)</h2>
+  <p class="section-desc">Processes neurons sequentially. Each neuron reads its ternary codes from BRAM, accumulates, scales, and optionally applies BN.</p>
+
+  <div class="fsm-container">
+    <div class="fsm-row" style="flex-wrap:wrap; gap:8px;">
+      <div class="fsm-state idle" onclick="toggleFSM('fc',0)">S_IDLE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state compute" onclick="toggleFSM('fc',1)">S_FILL<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state compute" onclick="toggleFSM('fc',2)">S_MAC<span class="cyc">WIDTH cycles</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state drain" onclick="toggleFSM('fc',3)">S_DRAIN<span class="cyc">2 cycles</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state scale" onclick="toggleFSM('fc',4)">S_SCALE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state bn" onclick="toggleFSM('fc',5)">S_BN<span class="cyc">1 cy (if BN)</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state store" onclick="toggleFSM('fc',6)">S_STORE<span class="cyc">1 cycle</span></div>
+      <div class="fsm-arrow">→</div>
+      <div class="fsm-state done" onclick="toggleFSM('fc',7)">S_DONE<span class="cyc">holds</span></div>
+    </div>
+  </div>
+
+  <div id="fc-fsm-0" class="fsm-detail">
+    <h4>S_IDLE</h4>
+    <p>Resets <code>neuron_idx=0, input_idx=0, w_addr=0, pos_acc=0, neg_acc=0</code>. → <code>S_FILL</code></p>
+  </div>
+  <div id="fc-fsm-1" class="fsm-detail">
+    <h4>S_FILL — Pipeline Prime</h4>
+    <p>Loads the first weight code and input data into the pipeline registers (<code>p1_code, p1_data</code>). Advances <code>input_idx</code> and <code>w_addr</code>. → <code>S_MAC</code></p>
+  </div>
+  <div id="fc-fsm-2" class="fsm-detail">
+    <h4>S_MAC — Ternary Accumulate</h4>
+    <p>Same split accumulation as Conv — exactly the same case statement on <code>p1_code</code>:</p>
+    <pre>2'b01 (+1): <span class="str">pos_acc</span> += p1_data
+2'b11 (-1): <span class="str">neg_acc</span> += p1_data
+2'b00 ( 0): skip</pre>
+    <p>Iterates <code>LAYER_NEURON_WIDTH</code> cycles (FC1: 239 inputs, FC2: 71 inputs — including zero padding).</p>
+    <p>Weight codes are read from BRAM ROM (<code>w_rom</code>), initialized via <code>$readmemh</code>.</p>
+  </div>
+  <div id="fc-fsm-3" class="fsm-detail">
+    <h4>S_DRAIN</h4>
+    <p>Same 2-cycle pipeline flush as Conv. Collects last tap, then → <code>S_SCALE</code>.</p>
+  </div>
+  <div id="fc-fsm-4" class="fsm-detail">
+    <h4>S_SCALE — TTQ Scaling + Bias</h4>
+    <pre>biased_reg ← (Wp × pos_acc[31:0]) >>> 16
+            − (Wn × neg_acc[31:0]) >>> 16
+            + bias[neuron_idx]</pre>
+    <p>If <code>HAS_BN=1</code> → <code>S_BN</code>. If <code>HAS_BN=0</code> (FC2) → <code>S_STORE</code> directly.</p>
+  </div>
+  <div id="fc-fsm-5" class="fsm-detail">
+    <h4>S_BN — BatchNorm (FC1 only)</h4>
+    <pre>bn_product_reg ← (bn_scale[neuron] × biased_reg[31:0]) >>> 16
+final_result = bn_product_reg + bn_shift[neuron]</pre>
+    <p>FC2 has <code>HAS_BN=0</code>, so this state is skipped and <code>final_result = biased_reg</code> directly.</p>
+  </div>
+  <div id="fc-fsm-6" class="fsm-detail">
+    <h4>S_STORE — ReLU + Output</h4>
+    <p>Applies ReLU (if <code>activation_function=1</code>): clamps negative to 0.</p>
+    <p>Stores result to <code>data_out[neuron_idx]</code>. Resets <code>pos_acc=0, neg_acc=0</code>.</p>
+    <p>If more neurons: <code>neuron_idx++</code> → <code>S_FILL</code> (loop back).<br>
+    If last neuron done: → <code>S_DONE</code></p>
+  </div>
+  <div id="fc-fsm-7" class="fsm-detail">
+    <h4>S_DONE</h4>
+    <p>Asserts <code>counter_donestatus=1</code>. For FC2, this is the final completion signal.</p>
+  </div>
+</section>
+
+<!-- ═══════ 5. WORKED EXAMPLE ═══════ -->
+<section id="example">
+  <h2><span class="num">5</span> Worked Example: Conv1, Filter 0, Position (0,0)</h2>
+  <p class="section-desc">Let's trace exactly what happens when the hardware computes one output pixel. The input is test image #0 (digit 7) — all background pixels are -1.0 in the top-left 3×3 patch.</p>
+
+  <h3>Input Data</h3>
+  <div class="card">
+    <p style="font-size:14px;color:var(--text2)">Conv1, filter 0, output position (row=0, col=0). The 3×3 kernel slides over the top-left corner of the 28×28 image.</p>
+    <table>
+      <tr><th></th><th>col 0</th><th>col 1</th><th>col 2</th></tr>
+      <tr><td><strong>row 0</strong></td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td></tr>
+      <tr><td><strong>row 1</strong></td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td></tr>
+      <tr><td><strong>row 2</strong></td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td><td>-1.0 (FFFF0000)</td></tr>
+    </table>
+    <p style="font-size:13px; color:var(--text3); margin-top:8px">All 9 pixels are -1.0 (normalised MNIST background). In Q16.16: <code>0xFFFF0000 = -65536</code></p>
+  </div>
+
+  <h3>Ternary Codes (Filter 0)</h3>
+  <div class="card">
+    <table>
+      <tr><th></th><th>col 0</th><th>col 1</th><th>col 2</th></tr>
+      <tr><td><strong>row 0</strong></td><td><span class="hi-green">+1</span></td><td><span class="hi-green">+1</span></td><td><span class="hi-pink">-1</span></td></tr>
+      <tr><td><strong>row 1</strong></td><td><span class="hi-pink">-1</span></td><td><span class="hi-green">+1</span></td><td><span class="hi-green">+1</span></td></tr>
+      <tr><td><strong>row 2</strong></td><td><span class="hi-green">+1</span></td><td><span class="hi-green">+1</span></td><td><span class="hi-green">+1</span></td></tr>
+    </table>
+    <p style="font-size:13px; color:var(--text3); margin-top:8px">7 taps are +1 → go to <code>pos_acc</code>. 2 taps are -1 → go to <code>neg_acc</code>. 0 taps are zero.</p>
+  </div>
+
+  <h3>Parameters (from .mem files)</h3>
+  <div class="card">
+    <table>
+      <tr><th>Parameter</th><th>Hex</th><th>Q16.16 decimal</th></tr>
+      <tr><td>Wp</td><td>000027BB</td><td>0.15520</td></tr>
+      <tr><td>Wn</td><td>0000294D</td><td>0.16133</td></tr>
+      <tr><td>bias[0]</td><td>00000194</td><td>0.00616</td></tr>
+      <tr><td>bn_scale[0]</td><td>0002D656</td><td>2.83725</td></tr>
+      <tr><td>bn_shift[0]</td><td>00023624</td><td>2.21149</td></tr>
+    </table>
+  </div>
+
+  <h3>FSM Cycle-by-Cycle Trace</h3>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟦 S_IDLE → S_CONV_COMPUTE: Reset counters (1 cycle)</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <pre>filter_idx=0, conv_out_row=0, conv_out_col=0
+ch_cnt=0, kr_cnt=0, kc_cnt=0
+pos_acc=0, neg_acc=0
+→ state = S_CONV_COMPUTE</pre>
+    </div>
+  </div>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟪 S_CONV_COMPUTE: 9 taps accumulated (9 cycles)</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <p>Each cycle: pipeline registers <code>p1_data</code> and <code>p1_code</code>. Accumulation fires one cycle later.</p>
+      <table>
+        <tr><th>Cycle</th><th>Tap (kr,kc)</th><th>Pixel</th><th>Code</th><th>Action</th><th>pos_acc</th><th>neg_acc</th></tr>
+        <tr><td>1</td><td>(0,0)</td><td>-65536</td><td>+1</td><td>—(pipeline prime)</td><td>0</td><td>0</td></tr>
+        <tr><td>2</td><td>(0,1)</td><td>-65536</td><td>+1</td><td>pos += -65536</td><td>-65536</td><td>0</td></tr>
+        <tr><td>3</td><td>(0,2)</td><td>-65536</td><td>-1</td><td>pos += -65536</td><td>-131072</td><td>0</td></tr>
+        <tr><td>4</td><td>(1,0)</td><td>-65536</td><td>-1</td><td>neg += -65536</td><td>-131072</td><td>-65536</td></tr>
+        <tr><td>5</td><td>(1,1)</td><td>-65536</td><td>+1</td><td>neg += -65536</td><td>-131072</td><td>-131072</td></tr>
+        <tr><td>6</td><td>(1,2)</td><td>-65536</td><td>+1</td><td>pos += -65536</td><td>-196608</td><td>-131072</td></tr>
+        <tr><td>7</td><td>(2,0)</td><td>-65536</td><td>+1</td><td>pos += -65536</td><td>-262144</td><td>-131072</td></tr>
+        <tr><td>8</td><td>(2,1)</td><td>-65536</td><td>+1</td><td>pos += -65536</td><td>-327680</td><td>-131072</td></tr>
+        <tr><td>9</td><td>(2,2)</td><td>-65536</td><td>+1</td><td>pos += -65536</td><td>-393216</td><td>-131072</td></tr>
+      </table>
+      <p style="margin-top:8px; color:var(--text3); font-size:13px">→ Transition to S_CONV_DRAIN. Last tap (2,2) data is still in p1_data pipeline.</p>
+    </div>
+  </div>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟨 S_CONV_DRAIN: Flush pipeline (2 cycles)</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <pre><span class="cm">// drain_cnt=0:</span> collect tap (2,2): code=+1, pos_acc += -65536
+  pos_acc = <span class="str">-458752</span>  (= -7.0 in Q16.16)
+  neg_acc = <span class="str">-131072</span>  (= -2.0 in Q16.16)
+
+<span class="cm">// drain_cnt=1:</span> accumulators final → S_CONV_SCALE</pre>
+    </div>
+  </div>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟧 S_CONV_SCALE: Wp/Wn multiply + bias (1 cycle) — THE KEY STEP</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <div class="trace-step">
+        <div class="label">Step 1: Extract Q16.16 values</div>
+        <span class="math">pos_acc_q16 = pos_acc[31:0] = -458752  (= -7.0 in Q16.16)
+neg_acc_q16 = neg_acc[31:0] = -131072  (= -2.0 in Q16.16)</span>
+      </div>
+      <div class="trace-step">
+        <div class="label">Step 2: Wp × pos_acc_q16 (DSP48 #1)</div>
+        <span class="math">10171 × (-458752) = -4,665,966,592
+>>> 16 = -71,197  (= -1.0864 in Q16.16)</span>
+      </div>
+      <div class="trace-step">
+        <div class="label">Step 3: Wn × neg_acc_q16 (DSP48 #2)</div>
+        <span class="math">10573 × (-131072) = -1,385,824,256
+>>> 16 = -21,146  (= -0.3227 in Q16.16)</span>
+      </div>
+      <div class="trace-step">
+        <div class="label">Step 4: Combine + bias</div>
+        <span class="math">biased_reg = (-71197) - (-21146) + 404
+           = -71197 + 21146 + 404
+           = <strong style="color:var(--amber)">-49647</strong>  (= -0.7576 in Q16.16)</span>
+      </div>
+      <p style="margin-top:12px; font-size:13px; color:var(--text2)">✅ Software reference: <code>-49644</code> (= -0.7575). Error: 3 LSBs = 0.006% — Q16.16 rounding.</p>
+    </div>
+  </div>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟦 S_CONV_BN: Folded BatchNorm (1 cycle)</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <div class="trace-step">
+        <div class="label">BN multiply</div>
+        <span class="math">biased_q16 = biased_reg[31:0] = -49647
+
+bn_product_reg = (185942 × (-49647)) >>> 16
+               = (-9,228,925,274) >>> 16
+               = -140,861  (= -2.1489 in Q16.16)</span>
+      </div>
+      <div class="trace-step">
+        <div class="label">BN shift (combinational)</div>
+        <span class="math">bn_result = bn_product_reg + bn_shift[0]
+          = -140861 + 144932
+          = <strong style="color:var(--green)">4071</strong>  (= 0.0621 in Q16.16)</span>
+      </div>
+      <p style="margin-top:12px; font-size:13px; color:var(--text2)">✅ Software reference: <code>4081</code> (= 0.0623). Error: 10 LSBs — excellent match.</p>
+    </div>
+  </div>
+
+  <div class="accordion">
+    <div class="acc-header" onclick="toggleAcc(this)">
+      <span>🟩 S_CONV_STORE: ReLU + store (1 cycle)</span>
+      <span class="arr">▼</span>
+    </div>
+    <div class="acc-body">
+      <pre>bn_result = 4071 > 0  → ReLU <span class="str">passes</span>
+conv_buf[0] ← <span class="str">4071</span>  (= 0.0621)
+
+<span class="cm">// Reset for next position:</span>
+pos_acc ← 0
+neg_acc ← 0
+conv_pos ← 1
+conv_out_col ← 1
+→ state = S_CONV_COMPUTE  <span class="cm">// loop for position (0,1)</span></pre>
+    </div>
+  </div>
+
+  <h3>Total Cycle Count Per Layer</h3>
+  <div class="card">
+    <table>
+      <tr><th>Layer</th><th>Positions</th><th>Taps/pos</th><th>Cycles/pos</th><th>Pool positions</th><th>Total cycles</th><th>Time @100MHz</th></tr>
+      <tr><td>Conv1+Pool1</td><td>676 (26×26)</td><td>9</td><td>14</td><td>169 (13×13) ×5</td><td>~41,236</td><td>~0.41 ms</td></tr>
+      <tr><td>Conv2+Pool2</td><td>121 (11×11)</td><td>36</td><td>41</td><td>25 (5×5) ×5</td><td>~40,688</td><td>~0.41 ms</td></tr>
+      <tr><td>FC1</td><td>32 neurons</td><td>240</td><td>245</td><td>—</td><td>7,840</td><td>~0.08 ms</td></tr>
+      <tr><td>FC2</td><td>10 neurons</td><td>72</td><td>76</td><td>—</td><td>760</td><td>~0.008 ms</td></tr>
+      <tr style="font-weight:700"><td>Total</td><td></td><td></td><td></td><td></td><td>~90,524</td><td><span class="hi-green">~0.91 ms</span></td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════ 6. COMPARISON ═══════ -->
+<section id="comparison">
+  <h2><span class="num">6</span> Four-Model Comparison</h2>
+  <p class="section-desc">How does TTQ+BN stack up against the baseline CNN and the TWN variant?</p>
+
+  <div class="card" style="overflow-x:auto;">
+    <table>
+      <tr>
+        <th></th>
+        <th>CNN2D (Original)</th>
+        <th>CNN2D + BN</th>
+        <th>TWN + BN</th>
+        <th style="background:rgba(99,102,241,.15)">TTQ + BN ★</th>
+      </tr>
+      <tr><td><strong>Test Accuracy</strong></td><td>98.35%</td><td>98.87%</td><td>95.85%</td><td style="color:var(--green);font-weight:700">97.28%</td></tr>
+      <tr><td><strong>Δ from Original</strong></td><td>—</td><td>+0.52%</td><td>−2.50%</td><td>−1.07%</td></tr>
+      <tr><td>Weight bits</td><td>32</td><td>32</td><td>2</td><td>2 + scalars</td></tr>
+      <tr><td>Weight memory</td><td>28,176 B</td><td>28,176 B</td><td>1,761 B</td><td>1,793 B</td></tr>
+      <tr><td>Compression</td><td>1×</td><td>1×</td><td>16×</td><td style="font-weight:700">15.7×</td></tr>
+      <tr><td>MAC multipliers</td><td>1/tap</td><td>1/tap</td><td><span style="color:var(--green)">0</span></td><td><span style="color:var(--green)">0</span></td></tr>
+      <tr><td>DSP48/layer</td><td>~14 total</td><td>~18 total</td><td>1</td><td>3</td></tr>
+      <tr><td>HW verified</td><td>✓</td><td>—</td><td>✓</td><td style="color:var(--green);font-weight:700">✓ PASS</td></tr>
+    </table>
+  </div>
+
+  <div class="card" style="border-left:4px solid var(--green);">
+    <div class="card-title"><span class="dot" style="background:var(--green)"></span>Bottom Line</div>
+    <p style="font-size:15px;color:var(--text)"><strong>TTQ+BN is the recommended approach.</strong> It loses only 1.07% accuracy from the full-precision baseline while compressing weights <strong>15.7×</strong>, eliminating all per-tap multipliers, and needing only 3 DSP48 slices per layer. Hardware simulation confirms <strong>&lt;0.01% numerical error</strong> versus the software model.</p>
+  </div>
+</section>
+
+</div>
+
+<!-- ═══════ FOOTER ═══════ -->
+<footer>
+  TTQ+BN 2D CNN Hardware — Xilinx Zynq-7020 (XC7Z020) &nbsp;|&nbsp; Q16.16 Fixed-Point &nbsp;|&nbsp; PyTorch 2.x → Vivado XSim<br>
+  <span style="color:var(--accent2)">FPGA_NN Project</span> — 2026
+</footer>
+
+<script>
+function toggleFSM(prefix, idx) {
+  const el = document.getElementById(`${prefix}-fsm-${idx}`);
+  const wasActive = el.classList.contains('active');
+  // Close all in this group
+  document.querySelectorAll(`[id^="${prefix}-fsm-"]`).forEach(e => e.classList.remove('active'));
+  if (!wasActive) el.classList.add('active');
+}
+
+function toggleAcc(header) {
+  const body = header.nextElementSibling;
+  const wasOpen = body.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.acc-body').forEach(b => b.classList.remove('open'));
+  document.querySelectorAll('.acc-header').forEach(h => h.classList.remove('open'));
+  if (!wasOpen) {
+    body.classList.add('open');
+    header.classList.add('open');
+  }
+}
+</script>
+
+</body>
+</html>

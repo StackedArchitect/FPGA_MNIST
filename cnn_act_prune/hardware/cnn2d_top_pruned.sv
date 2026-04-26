@@ -202,11 +202,16 @@ module cnn2d_top_pruned #(
     //  Mask Generator 1: pool1_out → mask1
     //  Starts when pool1_done rises
     // ================================================================
-    // Edge detect pool1_done → generate start pulse
+    // Edge detect pool1_done → generate start pulse (with reset)
     reg pool1_done_d;
     always @(posedge clk) begin
-        pool1_done_d <= pool1_done;
-        mask1_start  <= pool1_done && !pool1_done_d;
+        if (!rstn) begin
+            pool1_done_d <= 1'b0;
+            mask1_start  <= 1'b0;
+        end else begin
+            pool1_done_d <= pool1_done;
+            mask1_start  <= pool1_done && !pool1_done_d;
+        end
     end
 
     act_mask_gen #(
@@ -217,6 +222,7 @@ module cnn2d_top_pruned #(
         .BITS        (BITS)
     ) u_mask_gen_1 (
         .clk         (clk),
+        .rstn        (rstn),
         .start       (mask1_start),
         .act_in      (pool1_out),
         .thresh_high (mask1_thresh_high),
@@ -262,8 +268,13 @@ module cnn2d_top_pruned #(
     // ================================================================
     reg pool2_done_d;
     always @(posedge clk) begin
-        pool2_done_d <= pool2_done;
-        mask2_start  <= pool2_done && !pool2_done_d;
+        if (!rstn) begin
+            pool2_done_d <= 1'b0;
+            mask2_start  <= 1'b0;
+        end else begin
+            pool2_done_d <= pool2_done;
+            mask2_start  <= pool2_done && !pool2_done_d;
+        end
     end
 
     act_mask_gen #(
@@ -274,6 +285,7 @@ module cnn2d_top_pruned #(
         .BITS        (BITS)
     ) u_mask_gen_2 (
         .clk         (clk),
+        .rstn        (rstn),
         .start       (mask2_start),
         .act_in      (pool2_out),
         .thresh_high (mask2_thresh_high),

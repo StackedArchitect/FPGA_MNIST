@@ -26,6 +26,7 @@ module act_mask_gen #(
     parameter BITS        = 31
 )(
     input  wire                    clk,
+    input  wire                    rstn,         // active-low reset
     input  wire                    start,        // pulse high for 1 cycle to begin
     input  wire signed [BITS:0]    act_in  [0 : N_POSITIONS-1],
     input  wire signed [31:0]      thresh_high,  // T_H  (Q16.16, positive)
@@ -118,11 +119,20 @@ module act_mask_gen #(
     integer i;
 
     always @(posedge clk) begin
-        done <= 1'b0;
+        if (!rstn) begin
+            state    <= S_IDLE;
+            done     <= 1'b0;
+            scan_pos <= 0;
+            scan_ch  <= 0;
+            scan_row <= 0;
+            scan_col <= 0;
+            mask_out <= {N_POSITIONS{1'b0}};
+        end else begin
 
         case (state)
 
             S_IDLE: begin
+                done <= 1'b0;
                 if (start) begin
                     scan_pos <= 0;
                     scan_ch  <= 0;
@@ -189,9 +199,11 @@ module act_mask_gen #(
             end
 
             S_DONE: begin
-                // Stay here; mask_out remains valid
+                // Keep done HIGH — downstream module uses this as rstn
+                done <= 1'b1;
                 // Can be restarted by pulsing 'start' again
                 if (start) begin
+                    done     <= 1'b0;
                     scan_pos <= 0;
                     scan_ch  <= 0;
                     scan_row <= 0;
@@ -201,6 +213,7 @@ module act_mask_gen #(
             end
 
         endcase
+        end // else (!rstn)
     end
 
 endmodule

@@ -101,7 +101,8 @@ module tb_cnn2d_pruned;
         .PAD          (PAD),
         .BITS         (BITS),
         .FC1_WEIGHT_FILE("fc1_ternary_codes.mem"),
-        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem")
+        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem"),
+        .ENABLE_MASK_GEN(1)           // Enable mask gen for simulation
     ) dut (
         .clk       (clk),
         .rstn      (rstn),
@@ -296,7 +297,7 @@ module tb_cnn2d_pruned;
         conv1_end_cyc = cycle_count;
         $display("[INFO] Conv1+Pool1 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end
-    always @(posedge dut.mask1_done) begin
+    always @(posedge dut.gen_mask_enabled.u_mask_gen_1.done) begin
         mask1_end_cyc = cycle_count;
         $display("[INFO] Mask Gen 1 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end
@@ -304,7 +305,7 @@ module tb_cnn2d_pruned;
         conv2_end_cyc = cycle_count;
         $display("[INFO] Conv2+Pool2 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end
-    always @(posedge dut.mask2_done) begin
+    always @(posedge dut.gen_mask_enabled.u_mask_gen_2.done) begin
         mask2_end_cyc = cycle_count;
         $display("[INFO] Mask Gen 2 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end

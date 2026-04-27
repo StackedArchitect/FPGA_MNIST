@@ -182,7 +182,8 @@ module cnn2d_synth_top_pruned (
         .PAD            (PAD),
         .BITS           (BITS),
         .FC1_WEIGHT_FILE("fc1_ternary_codes.mem"),
-        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem")
+        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem"),
+        .ENABLE_MASK_GEN(0)         // Bypass mask generators for synthesis
     ) u_cnn2d (
         .clk                 (clk),
         .rstn                (rstn),

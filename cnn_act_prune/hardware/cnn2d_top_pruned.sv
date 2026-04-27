@@ -2,21 +2,18 @@
 //============================================================================
 // 2D CNN Top Module - TTQ + BN + Activation Pruning
 //
-// Based on cnn2d_top_ttq.sv with:
-//   - Two act_mask_gen instances (between Conv1→Conv2 and Conv2→FC1)
-//   - conv_pool_2d_pruned for Conv2 (Conv1 has no pruning — raw image input)
-//   - layer_seq_pruned for FC1 (FC2 not pruned — too small)
-//   - Hysteresis threshold ports (T_H, T_L per boundary)
-//   - Per-filter/neuron activation threshold ports
+// Data flow:
+//   data_in → Conv1+Pool1 (NO pruning) → pool1_out
+//           → Conv2+Pool2 (WITH pruning: threshold + lookahead, mask=all-1s)
+//           → FC1 (WITH pruning: threshold + lookahead, PAD mask=0)
+//           → FC2 (NO pruning)
 //
-// Data flow with pruning:
-//   data_in → u_conv_pool_1 (NO pruning) → pool1_out
-//           → u_mask_gen_1 (hysteresis)   → mask1 + mask1_done
-//           → u_conv_pool_2 (WITH pruning, starts after mask1_done)
-//           → pool2_out
-//           → u_mask_gen_2 (hysteresis)   → mask2 + mask2_done
-//           → u_fc1 (WITH pruning, starts after mask2_done)
-//           → u_fc2 (NO pruning)
+// ENABLE_MASK_GEN parameter:
+//   0 (default) = Direct handshake, mask generators bypassed.
+//                 Threshold pruning (Method 1) + lookahead still active.
+//                 ~23K LUTs — routes cleanly on Zynq-7020.
+//   1           = Full mask generator pipeline between layers (Method 2).
+//                 Adds ~2,200 LUTs + heavy routing. Use for simulation only.
 //============================================================================
 module cnn2d_top_pruned #(
     parameter INPUT_H         = 28,
@@ -57,7 +54,12 @@ module cnn2d_top_pruned #(
 
     // Mask generator sizes (derived)
     parameter MASK1_POSITIONS = POOL1_OUT_H * POOL1_OUT_W * CONV1_OUT_CH,
-    parameter MASK2_POSITIONS = POOL2_OUT_H * POOL2_OUT_W * CONV2_OUT_CH
+    parameter MASK2_POSITIONS = POOL2_OUT_H * POOL2_OUT_W * CONV2_OUT_CH,
+
+    // === MASK GENERATOR ENABLE ===
+    // Set to 0 for synthesis (bypasses mask gen, saves ~2200 LUTs + routing)
+    // Set to 1 for simulation (enables full Method 2 hysteresis masking)
+    parameter ENABLE_MASK_GEN = 0
 )(
     input  wire                     clk,
     input  wire                     rstn,
@@ -94,13 +96,13 @@ module cnn2d_top_pruned #(
     input  wire signed [31:0]       fc2_b     [0 : FC2_OUT - 1],
 
     // === PRUNING PARAMETERS ===
-    // Hysteresis thresholds (Q16.16)
+    // Hysteresis thresholds (only used when ENABLE_MASK_GEN=1)
     input  wire signed [31:0]       mask1_thresh_high,
     input  wire signed [31:0]       mask1_thresh_low,
     input  wire signed [31:0]       mask2_thresh_high,
     input  wire signed [31:0]       mask2_thresh_low,
 
-    // Per-filter/neuron activation thresholds (Q16.16)
+    // Per-filter/neuron activation thresholds (always active)
     input  wire signed [31:0]       conv2_act_threshold [0 : CONV2_OUT_CH - 1],
     input  wire signed [31:0]       fc1_act_threshold   [0 : FC1_OUT - 1],
 
@@ -111,32 +113,22 @@ module cnn2d_top_pruned #(
     // ================================================================
     //  Internal wires
     // ================================================================
-    // Conv1 output (no pruning on Conv1)
     wire signed [BITS:0] pool1_out [0 : POOL1_OUT_H * POOL1_OUT_W * CONV1_OUT_CH - 1];
     wire                 pool1_done;
 
-    // Mask generator 1
-    wire [MASK1_POSITIONS-1:0] mask1;
-    wire                       mask1_done;
-    reg                        mask1_start;
-
-    // Conv2 output (with pruning)
     wire signed [BITS:0] pool2_out [0 : POOL2_OUT_H * POOL2_OUT_W * CONV2_OUT_CH - 1];
     wire                 pool2_done;
 
-    // Mask generator 2
-    wire [MASK2_POSITIONS-1:0] mask2;
-    wire                       mask2_done;
-    reg                        mask2_start;
-
-    // FC wires
     wire signed [BITS:0]   fc1_in      [0 : FC1_WIDTH];
     wire signed [BITS+8:0] fc1_out_raw [0 : FC1_OUT - 1];
     wire                   fc1_done;
 
     wire signed [BITS+8:0] fc2_in      [0 : FC2_WIDTH];
 
-    // FC2 BN zero tie-off
+    // ================================================================
+    //  Tie-offs for unpruned layers
+    // ================================================================
+    // FC2 BN zero
     wire signed [31:0] fc2_bn_zero [0 : FC2_OUT - 1];
     genvar gz;
     generate
@@ -145,7 +137,7 @@ module cnn2d_top_pruned #(
         end
     endgenerate
 
-    // FC2 pruning tie-offs (no pruning on FC2)
+    // FC2 pruning tie-offs
     wire [FC2_WIDTH:0] fc2_mask_ones;
     assign fc2_mask_ones = {(FC2_WIDTH+1){1'b1}};
     wire signed [31:0] fc2_act_thresh_zero [0 : FC2_OUT - 1];
@@ -155,14 +147,9 @@ module cnn2d_top_pruned #(
         end
     endgenerate
 
-    // ================================================================
-    //  Conv1 + Pool1 (NO pruning — raw image input)
-    //  Uses original conv_pool_2d_pruned with ENABLE_PRUNING=0
-    // ================================================================
-    // Conv1 mask: all ones (no pruning)
+    // Conv1 pruning tie-offs
     wire [INPUT_H * INPUT_W * INPUT_CH - 1 : 0] conv1_mask_ones;
     assign conv1_mask_ones = {(INPUT_H * INPUT_W * INPUT_CH){1'b1}};
-
     wire signed [31:0] conv1_act_thresh_zero [0 : CONV1_OUT_CH - 1];
     generate
         for (gz = 0; gz < CONV1_OUT_CH; gz = gz + 1) begin : gen_conv1_thresh
@@ -170,6 +157,9 @@ module cnn2d_top_pruned #(
         end
     endgenerate
 
+    // ================================================================
+    //  Conv1 + Pool1 (NO pruning)
+    // ================================================================
     conv_pool_2d_pruned #(
         .IN_H           (INPUT_H),
         .IN_W           (INPUT_W),
@@ -180,7 +170,7 @@ module cnn2d_top_pruned #(
         .POOL_H         (POOL1_SIZE),
         .POOL_W         (POOL1_SIZE),
         .BITS           (BITS),
-        .ENABLE_PRUNING (0)       // No pruning on Conv1
+        .ENABLE_PRUNING (0)
     ) u_conv_pool_1 (
         .clk                (clk),
         .rstn               (rstn),
@@ -199,41 +189,103 @@ module cnn2d_top_pruned #(
     );
 
     // ================================================================
-    //  Mask Generator 1: pool1_out → mask1
-    //  Starts when pool1_done rises
+    //  Mask Generation — Conditional on ENABLE_MASK_GEN
     // ================================================================
-    // Edge detect pool1_done → generate start pulse (with reset)
-    reg pool1_done_d;
-    always @(posedge clk) begin
-        if (!rstn) begin
-            pool1_done_d <= 1'b0;
-            mask1_start  <= 1'b0;
-        end else begin
-            pool1_done_d <= pool1_done;
-            mask1_start  <= pool1_done && !pool1_done_d;
+    wire [MASK1_POSITIONS-1:0] mask1;
+    wire                       mask1_done;
+    wire [MASK2_POSITIONS-1:0] mask2;
+    wire                       mask2_done;
+
+    // Handshake signals to downstream layers
+    wire conv2_rstn;
+    wire fc1_rstn;
+
+    generate
+        if (ENABLE_MASK_GEN == 1) begin : gen_mask_enabled
+            // ============================================================
+            //  MASK GENERATORS ACTIVE (Method 2 — simulation / analysis)
+            // ============================================================
+            reg mask1_start;
+            reg pool1_done_d;
+            always @(posedge clk) begin
+                if (!rstn) begin
+                    pool1_done_d <= 1'b0;
+                    mask1_start  <= 1'b0;
+                end else begin
+                    pool1_done_d <= pool1_done;
+                    mask1_start  <= pool1_done && !pool1_done_d;
+                end
+            end
+
+            act_mask_gen #(
+                .N_POSITIONS (MASK1_POSITIONS),
+                .MAP_H       (POOL1_OUT_H),
+                .MAP_W       (POOL1_OUT_W),
+                .N_CHANNELS  (CONV1_OUT_CH),
+                .BITS        (BITS)
+            ) u_mask_gen_1 (
+                .clk         (clk),
+                .rstn        (rstn),
+                .start       (mask1_start),
+                .act_in      (pool1_out),
+                .thresh_high (mask1_thresh_high),
+                .thresh_low  (mask1_thresh_low),
+                .mask_out    (mask1),
+                .done        (mask1_done)
+            );
+
+            reg mask2_start;
+            reg pool2_done_d;
+            always @(posedge clk) begin
+                if (!rstn) begin
+                    pool2_done_d <= 1'b0;
+                    mask2_start  <= 1'b0;
+                end else begin
+                    pool2_done_d <= pool2_done;
+                    mask2_start  <= pool2_done && !pool2_done_d;
+                end
+            end
+
+            act_mask_gen #(
+                .N_POSITIONS (MASK2_POSITIONS),
+                .MAP_H       (POOL2_OUT_H),
+                .MAP_W       (POOL2_OUT_W),
+                .N_CHANNELS  (CONV2_OUT_CH),
+                .BITS        (BITS)
+            ) u_mask_gen_2 (
+                .clk         (clk),
+                .rstn        (rstn),
+                .start       (mask2_start),
+                .act_in      (pool2_out),
+                .thresh_high (mask2_thresh_high),
+                .thresh_low  (mask2_thresh_low),
+                .mask_out    (mask2),
+                .done        (mask2_done)
+            );
+
+            // Handshake: wait for mask gen before starting next layer
+            assign conv2_rstn = mask1_done;
+            assign fc1_rstn   = mask2_done;
+
+        end else begin : gen_mask_bypassed
+            // ============================================================
+            //  MASK GENERATORS BYPASSED (synthesis — saves ~2200 LUTs)
+            //  Threshold pruning (Method 1) + lookahead still active.
+            //  mask = all-ones → skip check uses only weight + threshold.
+            // ============================================================
+            assign mask1      = {MASK1_POSITIONS{1'b1}};  // all keep
+            assign mask1_done = 1'b0;                     // unused
+            assign mask2      = {MASK2_POSITIONS{1'b1}};  // all keep
+            assign mask2_done = 1'b0;                     // unused
+
+            // Direct handshake: done → next layer starts immediately
+            assign conv2_rstn = pool1_done;
+            assign fc1_rstn   = pool2_done;
         end
-    end
-
-    act_mask_gen #(
-        .N_POSITIONS (MASK1_POSITIONS),
-        .MAP_H       (POOL1_OUT_H),
-        .MAP_W       (POOL1_OUT_W),
-        .N_CHANNELS  (CONV1_OUT_CH),
-        .BITS        (BITS)
-    ) u_mask_gen_1 (
-        .clk         (clk),
-        .rstn        (rstn),
-        .start       (mask1_start),
-        .act_in      (pool1_out),
-        .thresh_high (mask1_thresh_high),
-        .thresh_low  (mask1_thresh_low),
-        .mask_out    (mask1),
-        .done        (mask1_done)
-    );
+    endgenerate
 
     // ================================================================
-    //  Conv2 + Pool2 (WITH pruning)
-    //  Starts when mask1_done rises
+    //  Conv2 + Pool2 (WITH pruning — threshold + lookahead)
     // ================================================================
     conv_pool_2d_pruned #(
         .IN_H           (POOL1_OUT_H),
@@ -248,7 +300,7 @@ module cnn2d_top_pruned #(
         .ENABLE_PRUNING (1)
     ) u_conv_pool_2 (
         .clk                (clk),
-        .rstn               (mask1_done),      // Start AFTER mask is ready
+        .rstn               (conv2_rstn),
         .activation_function(1'b1),
         .data_in            (pool1_out),
         .weights            (conv2_w),
@@ -264,39 +316,8 @@ module cnn2d_top_pruned #(
     );
 
     // ================================================================
-    //  Mask Generator 2: pool2_out → mask2
-    // ================================================================
-    reg pool2_done_d;
-    always @(posedge clk) begin
-        if (!rstn) begin
-            pool2_done_d <= 1'b0;
-            mask2_start  <= 1'b0;
-        end else begin
-            pool2_done_d <= pool2_done;
-            mask2_start  <= pool2_done && !pool2_done_d;
-        end
-    end
-
-    act_mask_gen #(
-        .N_POSITIONS (MASK2_POSITIONS),
-        .MAP_H       (POOL2_OUT_H),
-        .MAP_W       (POOL2_OUT_W),
-        .N_CHANNELS  (CONV2_OUT_CH),
-        .BITS        (BITS)
-    ) u_mask_gen_2 (
-        .clk         (clk),
-        .rstn        (rstn),
-        .start       (mask2_start),
-        .act_in      (pool2_out),
-        .thresh_high (mask2_thresh_high),
-        .thresh_low  (mask2_thresh_low),
-        .mask_out    (mask2),
-        .done        (mask2_done)
-    );
-
-    // ================================================================
     //  Flatten + Pad for FC1
-    //  PAD positions get mask bit = 0 (skipped by lookahead)
+    //  PAD positions get mask bit = 0 → skipped by 4-tap lookahead
     // ================================================================
     genvar g;
     generate
@@ -309,7 +330,8 @@ module cnn2d_top_pruned #(
         end
     endgenerate
 
-    // Build FC1 mask: PAD zeros get mask=0, active positions use mask2
+    // FC1 mask: PAD=0 (skip), active=1 (threshold decides)
+    // mask2 is all-ones when ENABLE_MASK_GEN=0, so active positions = 1
     wire [FC1_WIDTH:0] fc1_mask;
     generate
         for (g = 0; g <= FC1_WIDTH; g = g + 1) begin : gen_fc1_mask
@@ -334,7 +356,7 @@ module cnn2d_top_pruned #(
         .ENABLE_PRUNING    (1)
     ) u_fc1 (
         .clk                (clk),
-        .rstn               (mask2_done),      // Start AFTER mask is ready
+        .rstn               (fc1_rstn),
         .activation_function(1'b1),
         .b                  (fc1_b),
         .data_in            (fc1_in),
@@ -349,7 +371,7 @@ module cnn2d_top_pruned #(
     );
 
     // ================================================================
-    //  Pad FC1 output for FC2 (unchanged)
+    //  Pad FC1 output for FC2
     // ================================================================
     generate
         for (g = 0; g <= FC2_WIDTH; g = g + 1) begin : gen_fc2_pad
@@ -362,7 +384,7 @@ module cnn2d_top_pruned #(
     endgenerate
 
     // ================================================================
-    //  FC2: NO pruning (too small to justify, uses ENABLE_PRUNING=0)
+    //  FC2: NO pruning
     // ================================================================
     localparam FC2_BITS = BITS + 8;
 

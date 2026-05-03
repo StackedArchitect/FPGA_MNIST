@@ -1,18 +1,18 @@
 `timescale 1ns / 1ps
 //============================================================================
-// Sequential FC Layer - TTQ + BN + Activation Pruning
+// Sequential FC Layer - TTQ + BN + Inline Activation Pruning
 //
 // Based on layer_seq_ttq.sv with these additions:
-//   - act_mask input: 1-bit per input position (from mask generator)
-//   - act_threshold input: per-neuron Q16.16 threshold (Method 1)
+//   - act_threshold input: per-neuron Q16.16 threshold (Method 1 / DAAP)
 //   - 4-tap lookahead skip: advances input_idx/w_addr by up to 4
 //     when consecutive inputs are skippable
 //   - Gated pipeline: p1_data/p1_code don't toggle on skipped inputs
 //
 // A tap is skippable if ANY of:
 //   (a) weight code == 0  (zero ternary weight)
-//   (b) act_mask bit == 0 (hysteresis mask says prune)
-//   (c) |activation| < per-neuron threshold (Method 1)
+//   (b) |activation| < per-neuron threshold (Method 1)
+//
+// No external mask generator — thresholding is done inline.
 //
 // ENABLE_PRUNING parameter: set to 0 to disable all pruning logic.
 //============================================================================
@@ -40,8 +40,7 @@ module layer_seq_pruned #(
     input  wire signed [31:0]             bn_scale  [0:NUM_NEURONS-1],
     input  wire signed [31:0]             bn_shift  [0:NUM_NEURONS-1],
 
-    // === PRUNING INPUTS ===
-    input  wire [LAYER_NEURON_WIDTH:0]    act_mask,       // 1=keep, 0=prune
+    // === PRUNING INPUT (inline threshold only, no mask) ===
     input  wire signed [31:0]             act_threshold [0:NUM_NEURONS-1],
 
     output reg  signed [LAYER_BITS+8:0]   data_out  [0:NUM_NEURONS-1],
@@ -76,24 +75,47 @@ module layer_seq_pruned #(
     reg [1:0]  drain_cnt;
 
     // ================================================================
-    //  Skip logic — combinational (current + 3 lookahead)
+    //  Registered threshold pre-computation (DAAP — Method 1)
+    //
+    //  Strategy: compute |act(input_idx+1)| < threshold THIS cycle,
+    //  register the result, use it NEXT cycle when input_idx has
+    //  advanced by 1. Keeps abs+compare OFF the critical path.
+    //
+    //  Invalidation: after multi-tap skip (advance > 1), the registered
+    //  value is for the wrong position → disabled for 1 cycle.
     // ================================================================
-    // Current input skip check (full: mask + weight + threshold)
-    wire cur_mask    = ENABLE_PRUNING ? act_mask[input_idx] : 1'b1;
-    wire signed [LAYER_BITS:0] cur_act = data_in[input_idx];
-    wire signed [LAYER_BITS:0] cur_abs = (cur_act >= 0) ? cur_act : -cur_act;
-    wire cur_below_t = ENABLE_PRUNING ?
-                       ($signed(cur_abs) < $signed(act_threshold[neuron_idx])) : 1'b0;
-    wire [1:0] cur_wcode = w_rom[w_addr];
-    wire cur_skip = (cur_wcode == 2'b00) || !cur_mask || cur_below_t;
+    wire signed [LAYER_BITS:0] precomp_act = data_in[input_idx + 1];
+    // data_in is post-ReLU (pool2_out) → always >= 0, no abs() needed
+    wire precomp_below = ENABLE_PRUNING ?
+        ($signed(precomp_act) < $signed(act_threshold[neuron_idx])) : 1'b0;
 
-    // Lookahead checks (mask + weight only — skip threshold for timing)
+    reg cur_below_thresh_r;   // Registered threshold for current position
+    reg skipped_multi_last;   // True if previous cycle advanced by >1
+
+    always @(posedge clk) begin
+        if (!rstn || state == S_IDLE || state == S_STORE)
+            cur_below_thresh_r <= 1'b0;         // Reset on new neuron
+        else if (state == S_FILL || state == S_MAC)
+            cur_below_thresh_r <= precomp_below; // Pre-compute for next input
+    end
+
+    // ================================================================
+    //  Skip logic — weight-zero OR registered threshold (FAST)
+    //  cur_skip reads only FF outputs + weight compare — no abs/compare
+    // ================================================================
+    wire [1:0] cur_wcode = w_rom[w_addr];
+    wire cur_skip = (cur_wcode == 2'b00)
+                 || (ENABLE_PRUNING && cur_below_thresh_r && !skipped_multi_last);
+
+    // Lookahead checks — weight-zero only (timing safe)
     wire skip_p1 = (input_idx + 1 <= LAYER_NEURON_WIDTH) ?
-                   (!act_mask[input_idx+1] || (w_rom[w_addr+1] == 2'b00)) : 1'b0;
+                   (w_rom[w_addr+1] == 2'b00) : 1'b0;
+
     wire skip_p2 = (input_idx + 2 <= LAYER_NEURON_WIDTH) ?
-                   (!act_mask[input_idx+2] || (w_rom[w_addr+2] == 2'b00)) : 1'b0;
+                   (w_rom[w_addr+2] == 2'b00) : 1'b0;
+
     wire skip_p3 = (input_idx + 3 <= LAYER_NEURON_WIDTH) ?
-                   (!act_mask[input_idx+3] || (w_rom[w_addr+3] == 2'b00)) : 1'b0;
+                   (w_rom[w_addr+3] == 2'b00) : 1'b0;
 
     // Compute advance amount (1 to 4)
     wire [2:0] skip_advance;
@@ -102,12 +124,18 @@ module layer_seq_pruned #(
                           (!skip_p2) ? 3'd2 :
                           (!skip_p3) ? 3'd3 : 3'd4;
 
+    // skipped_multi_last register — placed AFTER skip_advance declaration
+    always @(posedge clk) begin
+        if (!rstn) skipped_multi_last <= 1'b0;
+        else       skipped_multi_last <= (state == S_MAC && skip_advance > 3'd1);
+    end
+
     // Clamp advance so we don't overshoot past LAYER_NEURON_WIDTH
     wire [31:0] next_input_idx = input_idx + {29'd0, skip_advance};
     wire advance_past_end = (next_input_idx > LAYER_NEURON_WIDTH);
 
     // ================================================================
-    //  Gated pipeline
+    //  Gated pipeline — skip gates accumulator (power + cycle saving)
     // ================================================================
     reg signed [1:0]          p1_code;
     reg signed [LAYER_BITS:0] p1_data;

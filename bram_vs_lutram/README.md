@@ -33,28 +33,28 @@ FC2 (32→10) → logits → argmax → predicted digit
 
 The following table synthesizes the quantitative metrics extracted directly from the synthesized/implemented Vivado reports and XSim waveforms for both variants.
 
-| Metric Category | Specific Metric | BRAM Variant | LUT RAM Variant | Difference / Winner |
-| :--- | :--- | :--- | :--- | :--- |
-| **Utilization (Resources)** | **LUT Used** | 14,937 (28.08%) | 19,543 (36.73%) | BRAM saves ~4,606 LUTs |
-| | **LUTRAM Used** | N/A | 748 (4.30%) | - |
-| | **Flip-Flops (FF) Used**| 40,362 (37.93%) | 40,578 (38.14%) | Comparable (~200 FF diff) |
-| | **BRAM (36k/18k) Used**| 20 blocks (14.29%) | 0 blocks (0%) | LUT RAM uses 0 BRAM |
-| | **DSP48 Used** | 20 (9.09%) | 20 (9.09%) | Tie (Identical MAC usage) |
-| | **Bonded IOB** | 6 (3.00%) | 6 (3.00%) | Tie |
-| **Power Analysis** | **Total On-Chip Power** | 0.184 W | 0.147 W | LUT RAM uses 37 mW less |
-| | **Device Static Power** | 0.105 W (57%) | 0.103 W (70%) | Comparable |
-| | **Total Dynamic Power** | 0.079 W (43%) | 0.043 W (30%) | LUT RAM uses 36 mW less |
-| | *— BRAM Power* | 0.020 W (26% dyn) | 0.000 W (0% dyn) | LUT RAM eliminates BRAM power |
-| | *— Clocks Power* | 0.024 W (30% dyn) | 0.024 W (56% dyn) | Tie |
-| | *— Signals Power* | 0.019 W (25% dyn) | 0.010 W (24% dyn) | LUT RAM uses less signal power|
-| | *— Logic Power* | 0.010 W (13% dyn) | 0.007 W (15% dyn) | LUT RAM uses less logic power |
-| | *— DSP Power* | 0.005 W (7% dyn) | 0.002 W (4% dyn) | LUT RAM uses less DSP power |
-| **Timing (50 MHz Clock)** | **Worst Negative Slack (WNS)** | 1.865 ns | 2.033 ns | LUT RAM has slightly better WNS |
-| | **Worst Hold Slack (WHS)**| 0.061 ns | 0.066 ns | Comparable |
-| | **Worst Pulse Width Slack**| 9.750 ns | 9.000 ns | BRAM has better WPWS |
-| | **Timing Met?** | Yes | Yes | Tie |
-| **Performance (Simulation)**| **Total Inference Time** | 678,465.000 ns | 666,825.000 ns | LUT RAM finishes 11.64 µs faster |
-| | **Correct Digit Output** | 7 (Matched) | 7 (Matched) | Both functionally identical |
+| Metric Category              | Specific Metric                | BRAM Variant       | LUT RAM Variant   | Difference / Winner              |
+| :--------------------------- | :----------------------------- | :----------------- | :---------------- | :------------------------------- |
+| **Utilization (Resources)**  | **LUT Used**                   | 14,937 (28.08%)    | 19,543 (36.73%)   | BRAM saves ~4,606 LUTs           |
+|                              | **LUTRAM Used**                | N/A                | 748 (4.30%)       | -                                |
+|                              | **Flip-Flops (FF) Used**       | 40,362 (37.93%)    | 40,578 (38.14%)   | Comparable (~200 FF diff)        |
+|                              | **BRAM (36k/18k) Used**        | 20 blocks (14.29%) | 0 blocks (0%)     | LUT RAM uses 0 BRAM              |
+|                              | **DSP48 Used**                 | 20 (9.09%)         | 20 (9.09%)        | Tie (Identical MAC usage)        |
+|                              | **Bonded IOB**                 | 6 (3.00%)          | 6 (3.00%)         | Tie                              |
+| **Power Analysis**           | **Total On-Chip Power**        | 0.184 W            | 0.147 W           | LUT RAM uses 37 mW less          |
+|                              | **Device Static Power**        | 0.105 W (57%)      | 0.103 W (70%)     | Comparable                       |
+|                              | **Total Dynamic Power**        | 0.079 W (43%)      | 0.043 W (30%)     | LUT RAM uses 36 mW less          |
+|                              | _— BRAM Power_                 | 0.020 W (26% dyn)  | 0.000 W (0% dyn)  | LUT RAM eliminates BRAM power    |
+|                              | _— Clocks Power_               | 0.024 W (30% dyn)  | 0.024 W (56% dyn) | Tie                              |
+|                              | _— Signals Power_              | 0.019 W (25% dyn)  | 0.010 W (24% dyn) | LUT RAM uses less signal power   |
+|                              | _— Logic Power_                | 0.010 W (13% dyn)  | 0.007 W (15% dyn) | LUT RAM uses less logic power    |
+|                              | _— DSP Power_                  | 0.005 W (7% dyn)   | 0.002 W (4% dyn)  | LUT RAM uses less DSP power      |
+| **Timing (50 MHz Clock)**    | **Worst Negative Slack (WNS)** | 1.865 ns           | 2.033 ns          | LUT RAM has slightly better WNS  |
+|                              | **Worst Hold Slack (WHS)**     | 0.061 ns           | 0.066 ns          | Comparable                       |
+|                              | **Worst Pulse Width Slack**    | 9.750 ns           | 9.000 ns          | BRAM has better WPWS             |
+|                              | **Timing Met?**                | Yes                | Yes               | Tie                              |
+| **Performance (Simulation)** | **Total Inference Time**       | 678,465.000 ns     | 666,825.000 ns    | LUT RAM finishes 11.64 µs faster |
+|                              | **Correct Digit Output**       | 7 (Matched)        | 7 (Matched)       | Both functionally identical      |
 
 ---
 

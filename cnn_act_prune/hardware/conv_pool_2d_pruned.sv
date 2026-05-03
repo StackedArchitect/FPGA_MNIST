@@ -1,21 +1,20 @@
 `timescale 1ns / 1ps
 //============================================================================
-// Merged Conv2D + MaxPool2D - TTQ + BN + Activation Pruning
+// Merged Conv2D + MaxPool2D - TTQ + BN + Inline Activation Pruning
 //
 // Based on conv_pool_2d_ttq.sv with these additions:
-//   - act_mask input: 1-bit per input position (from mask generator)
-//   - act_threshold input: per-filter Q16.16 threshold (Method 1)
+//   - act_threshold input: per-filter Q16.16 threshold (Method 1 / DAAP)
 //   - 2-tap lookahead skip: advances counters by 2 when consecutive
 //     taps are skippable, saving clock cycles
 //   - Gated pipeline: p1_data/p1_code don't toggle on skipped taps
 //
 // A tap is skippable if ANY of:
 //   (a) weight code == 0  (zero ternary weight)
-//   (b) act_mask bit == 0 (hysteresis mask says prune)
-//   (c) |activation| < per-filter threshold (Method 1)
+//   (b) |activation| < per-filter threshold (Method 1)
 //
-// ENABLE_PRUNING parameter: set to 0 to disable all pruning logic
-// (mask treated as all-ones, thresholds as zero).
+// No external mask generator — thresholding is done inline.
+//
+// ENABLE_PRUNING parameter: set to 0 to disable all pruning logic.
 //============================================================================
 module conv_pool_2d_pruned #(
     parameter IN_H            = 28,
@@ -51,9 +50,7 @@ module conv_pool_2d_pruned #(
     input  wire signed [31:0]           bn_scale  [0 : OUT_CH - 1],
     input  wire signed [31:0]           bn_shift  [0 : OUT_CH - 1],
 
-    // === PRUNING INPUTS ===
-    // Activation mask: 1=keep, 0=prune (one bit per input position)
-    input  wire [IN_H * IN_W * IN_CH - 1 : 0]  act_mask,
+    // === PRUNING INPUT (inline threshold only, no mask) ===
     // Per-filter activation threshold (Q16.16)
     input  wire signed [31:0]           act_threshold [0 : OUT_CH - 1],
 
@@ -130,33 +127,58 @@ module conv_pool_2d_pruned #(
                           + kr_n1 * KERNEL_W + kc_n1;
 
     // ================================================================
-    //  Skip logic — combinational
+    //  Registered threshold pre-computation (DAAP — Method 1)
+    //
+    //  Strategy: compute |act(next_tap)| < threshold THIS cycle,
+    //  register the result, use it NEXT cycle when we arrive there.
+    //  This keeps abs+compare OFF the counter-advance critical path.
+    //
+    //  Invalidation: after can_skip_2 (advance by 2), the registered
+    //  value is for the wrong position → disabled for 1 cycle.
     // ================================================================
-    // Current tap
-    wire cur_mask_bit   = ENABLE_PRUNING ? act_mask[data_idx]   : 1'b1;
+    wire signed [BITS:0] precomp_act = data_in[data_idx_n1];
+    // data_in is post-ReLU (pool1_out) → always >= 0, no abs() needed
+    wire precomp_below = ENABLE_PRUNING ?
+        ($signed(precomp_act) < $signed(act_threshold[filter_idx])) : 1'b0;
+
+    reg cur_below_thresh_r;   // Registered threshold for current position
+    reg skipped_2_last;       // True if previous cycle used can_skip_2
+
+    always @(posedge clk) begin
+        if (!rstn || state == S_IDLE || state == S_CONV_STORE)
+            cur_below_thresh_r <= 1'b0;        // Reset on new position/filter
+        else if (state == S_CONV_COMPUTE)
+            cur_below_thresh_r <= precomp_below; // Pre-compute for next tap
+    end
+
+    // ================================================================
+    //  Skip logic — weight-zero OR registered threshold (FAST)
+    //  cur_skip reads only FF outputs + weight compare — no abs/compare
+    // ================================================================
     wire [1:0] cur_wcode = weights[weight_addr];
-    wire signed [BITS:0] cur_act_val = data_in[data_idx];
-    wire signed [BITS:0] cur_abs_act = (cur_act_val >= 0) ? cur_act_val : -cur_act_val;
-    wire cur_below_thresh = ENABLE_PRUNING ?
-                            ($signed(cur_abs_act) < $signed(act_threshold[filter_idx])) : 1'b0;
+    wire cur_skip = (cur_wcode == 2'b00)
+                 || (ENABLE_PRUNING && cur_below_thresh_r && !skipped_2_last);
 
-    wire cur_skip = (cur_wcode == 2'b00) || !cur_mask_bit || cur_below_thresh;
-
-    // Next tap (only check mask + weight for lookahead — skip threshold to save timing)
-    wire next_mask_bit   = ENABLE_PRUNING ? act_mask[data_idx_n1] : 1'b1;
+    // Next tap lookahead — weight-zero only (timing safe)
     wire [1:0] next_wcode = weights[weight_addr_n1];
-    wire next_skip = (next_wcode == 2'b00) || !next_mask_bit;
+    wire next_skip = (next_wcode == 2'b00);
 
     // Can we skip 2 taps in one cycle?
     wire can_skip_2 = ENABLE_PRUNING && cur_skip && next_skip
-                    && (tap_cnt + 1 < TAP_COUNT - 1);  // at least 2 taps remaining after current
+                    && (tap_cnt + 1 < TAP_COUNT - 1);
+
+    // skipped_2_last register — placed AFTER can_skip_2 declaration
+    always @(posedge clk) begin
+        if (!rstn) skipped_2_last <= 1'b0;
+        else       skipped_2_last <= can_skip_2;
+    end
 
     // Last tap detection
     wire is_last_tap     = (tap_cnt == TAP_COUNT - 1);
     wire is_penult_tap   = (tap_cnt == TAP_COUNT - 2);
 
     // ================================================================
-    //  Gated pipeline
+    //  Gated pipeline — skip gates accumulator (power + cycle saving)
     // ================================================================
     reg signed [BITS:0] p1_data;
     reg signed [1:0]    p1_code;
@@ -208,26 +230,8 @@ module conv_pool_2d_pruned #(
     reg [1:0] drain_cnt;
 
     // ================================================================
-    //  Counter advance helpers
+    //  Advance-by-2 counter values — combinational
     // ================================================================
-    // Advance (kc, kr, ch, tap_cnt) by 1
-    task advance_by_1;
-        begin
-            tap_cnt <= tap_cnt + 1;
-            if (kc_cnt == KERNEL_W - 1) begin
-                kc_cnt <= 0;
-                if (kr_cnt == KERNEL_H - 1) begin
-                    kr_cnt <= 0;
-                    ch_cnt <= ch_cnt + 1;
-                end else
-                    kr_cnt <= kr_cnt + 1;
-            end else
-                kc_cnt <= kc_cnt + 1;
-        end
-    endtask
-
-    // Advance by 2: compute next-of-next counters
-    // kc_n2, kr_n2, ch_n2 derived from (kc_n1, kr_n1, ch_n1)
     wire [31:0] kc_n2 = (kc_n1 == KERNEL_W - 1) ? 32'd0 : kc_n1 + 1;
     wire [31:0] kr_n2 = (kc_n1 == KERNEL_W - 1) ?
                         ((kr_n1 == KERNEL_H - 1) ? 32'd0 : kr_n1 + 1) : kr_n1;
@@ -300,7 +304,6 @@ module conv_pool_2d_pruned #(
                         state     <= S_CONV_DRAIN;
                     end else if (cur_skip && is_penult_tap) begin
                         // Penultimate tap is skipped, next is last
-                        // Advance to last tap normally
                         kc_cnt  <= kc_n1;
                         kr_cnt  <= kr_n1;
                         ch_cnt  <= ch_n1;
@@ -396,7 +399,6 @@ module conv_pool_2d_pruned #(
                 //  POOL COMPARE (UNCHANGED)
                 // ==================================================
                 S_POOL_COMPARE: begin
-                    // Linear index into conv_buf for current pool window element
                     if ($signed(conv_buf[(pool_out_row * POOL_H + pool_r_cnt) * CONV_OUT_W
                                         + pool_out_col * POOL_W + pool_c_cnt]) > $signed(cur_max))
                         cur_max <= conv_buf[(pool_out_row * POOL_H + pool_r_cnt) * CONV_OUT_W
@@ -424,7 +426,6 @@ module conv_pool_2d_pruned #(
                     pool_c_cnt   <= 0;
 
                     if (pool_pos == POOL_OUT_POS - 1) begin
-                        // All pool positions done for this filter
                         if (filter_idx == OUT_CH - 1) begin
                             state <= S_DONE;
                         end else begin

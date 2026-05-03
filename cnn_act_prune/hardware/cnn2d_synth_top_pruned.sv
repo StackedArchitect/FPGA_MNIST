@@ -1,26 +1,23 @@
 `timescale 1ns / 1ps
 //==============================================================================
-// cnn2d_synth_top_pruned.sv - Synthesizable wrapper for Activation Pruning
+// cnn2d_synth_top_pruned.sv - Synthesizable wrapper — Inline Activation Pruning
 //
-// This module internalises ALL weights, biases, BN parameters, thresholds,
-// and input image using $readmemh, exposing only:
-//    clk     (1 pin)
-//    rstn    (1 pin)
+// Internalises ALL weights, biases, BN parameters, thresholds, and input image
+// using $readmemh. Only exposes:
+//    clk      (1 pin)
+//    rstn     (1 pin)
 //    pred_out (4 pins)
-// = 6 total I/O pins (fits on any FPGA)
+// = 6 total I/O pins
 //
 // Set this as the TOP MODULE for synthesis and implementation.
-// Use cnn2d_top_pruned.sv only for simulation (via tb_cnn2d_pruned.sv).
 //
-// .mem files required (all Q16.16 hex, placed in synthesis working dir):
-//   [Standard TTQ+BN weights - same as original]
+// .mem files required (placed in synthesis working directory):
+//   [Standard TTQ+BN weights]
 //     data_in.mem, conv1/2_ternary_codes.mem, fc1/2_ternary_codes.mem
 //     conv1/2_b.mem, fc1/2_b.mem
 //     conv1/2_wp.mem, conv1/2_wn.mem, fc1/2_wp.mem, fc1/2_wn.mem
 //     conv1/2_bn_scale.mem, conv1/2_bn_shift.mem, fc1_bn_scale/shift.mem
-//   [NEW - Activation pruning thresholds]
-//     mask1_thresh_high.mem, mask1_thresh_low.mem
-//     mask2_thresh_high.mem, mask2_thresh_low.mem
+//   [Activation pruning thresholds]
 //     conv2_act_threshold.mem (8 entries)
 //     fc1_act_threshold.mem (32 entries)
 //==============================================================================
@@ -105,15 +102,8 @@ module cnn2d_synth_top_pruned (
     reg signed [31:0] bn3_shift [0 : FC1_OUT - 1];
 
     // =========================================================================
-    //  Internal ROMs — PRUNING thresholds (NEW)
+    //  Internal ROMs — PRUNING thresholds (per-filter / per-neuron)
     // =========================================================================
-    // Hysteresis thresholds (scalar per boundary)
-    reg signed [31:0] mask1_th [0 : 0];
-    reg signed [31:0] mask1_tl [0 : 0];
-    reg signed [31:0] mask2_th [0 : 0];
-    reg signed [31:0] mask2_tl [0 : 0];
-
-    // Per-filter / per-neuron activation thresholds
     reg signed [31:0] conv2_act_thresh [0 : CONV2_OUT_CH - 1];
     reg signed [31:0] fc1_act_thresh   [0 : FC1_OUT - 1];
 
@@ -152,11 +142,7 @@ module cnn2d_synth_top_pruned (
         $readmemh("fc1_bn_scale.mem",         bn3_scale);
         $readmemh("fc1_bn_shift.mem",         bn3_shift);
 
-        // Activation pruning thresholds (NEW)
-        $readmemh("mask1_thresh_high.mem",    mask1_th);
-        $readmemh("mask1_thresh_low.mem",     mask1_tl);
-        $readmemh("mask2_thresh_high.mem",    mask2_th);
-        $readmemh("mask2_thresh_low.mem",     mask2_tl);
+        // Activation pruning thresholds
         $readmemh("conv2_act_threshold.mem",  conv2_act_thresh);
         $readmemh("fc1_act_threshold.mem",    fc1_act_thresh);
     end
@@ -182,8 +168,7 @@ module cnn2d_synth_top_pruned (
         .PAD            (PAD),
         .BITS           (BITS),
         .FC1_WEIGHT_FILE("fc1_ternary_codes.mem"),
-        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem"),
-        .ENABLE_MASK_GEN(0)         // Bypass mask generators for synthesis
+        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem")
     ) u_cnn2d (
         .clk                 (clk),
         .rstn                (rstn),
@@ -208,11 +193,7 @@ module cnn2d_synth_top_pruned (
         .bn3_shift           (bn3_shift),
         .fc1_b               (fc1_b),
         .fc2_b               (fc2_b),
-        // Pruning parameters
-        .mask1_thresh_high   (mask1_th[0]),
-        .mask1_thresh_low    (mask1_tl[0]),
-        .mask2_thresh_high   (mask2_th[0]),
-        .mask2_thresh_low    (mask2_tl[0]),
+        // Pruning thresholds (no mask thresholds needed)
         .conv2_act_threshold (conv2_act_thresh),
         .fc1_act_threshold   (fc1_act_thresh),
         .cnn_out             (cnn_out)

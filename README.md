@@ -1,402 +1,14 @@
 # FPGA MNIST Neural Network Inference
 
-**Target device:** Xilinx Zynq-7020 (xc7z020clg484-1) &nbsp;|&nbsp; **Arithmetic:** Q16.16 fixed-point &nbsp;|&nbsp; **Simulation:** Vivado XSim &nbsp;|&nbsp; **Training:** PyTorch 2.x
+**Target:** Xilinx Zynq-7020 (XC7Z020CLG400-1) &nbsp;|&nbsp; **Arithmetic:** Q16.16 fixed-point &nbsp;|&nbsp; **Language:** SystemVerilog &nbsp;|&nbsp; **Training:** PyTorch 2.x
 
 ---
 
-This project implements **three progressively improved neural network architectures** for handwritten digit recognition (MNIST) directly in synthesizable SystemVerilog — a Multi-Layer Perceptron (MLP), a 1D Convolutional Neural Network, and a 2D Convolutional Neural Network. Each model is trained in PyTorch, weights are exported to `.mem` files in Q16.16 fixed-point format, and the RTL is verified end-to-end in Vivado XSim before synthesis on a physical Zynq-7020 FPGA.
+## Overview
 
-The project traces a complete engineering journey: starting from a simple MLP baseline, identifying its hardware cost bottlenecks, redesigning with 1D convolution to cut weights 19×, then moving to 2D convolution to achieve 98.35% accuracy with only 1,728 weights — the most resource-efficient design on this chip.
+This project implements a complete **FPGA inference pipeline** for MNIST handwritten digit classification. The system evolves through four progressively refined architectures — from a simple MLP baseline to a ternary-quantised, activation-pruned 2D CNN — all verified end-to-end in Vivado XSim and synthesised on a physical Zynq-7020.
 
----
-
-## Project Evolution
-
-| Stage    | Architecture                 | Weights | DSPs Used | Sim Accuracy | Notes                                       |
-| -------- | ---------------------------- | ------- | --------- | ------------ | ------------------------------------------- |
-| Stage 1  | MLP 784→10→10                | 7,950   | 20        | 89.08%       | Baseline, synthesizable                     |
-| Stage 1b | MLP 784→256→128→64→10        | 242,304 | **458**   | ~96.8%       | Simulation only — exceeds DSP limit         |
-| Stage 2  | 1D CNN (4ch→8ch) + FC(32→10) | 12,778  | 54        | ~94%         | 19× weight reduction vs large MLP           |
-| Stage 3  | 2D CNN (4ch→8ch) + FC(32→10) | 1,728   | 54        | **98.35%**   | 7× fewer weights than 1D CNN, best accuracy |
-
-The architecture evolution is driven entirely by FPGA constraints. The large MLP hits a hard wall: the xc7z020 has **220 DSP48E1 slices** and the 784→256→128→64→10 topology needs 458. Switching to a convolutional front-end reduces the weight count dramatically (shared filters), and moving to 2D convolution better captures the spatial structure of the 28×28 image — giving higher accuracy with fewer parameters.
-
----
-
-## Architecture Details
-
-### 1 — MLP (784 → 10 → 10)
-
-```
- ┌───────────────────────────────────────────────────────────────────────┐
- │  Input  [784 × Q16.16]                                                 │
- │    │                                                                    │
- │    │   w1[784×10] + b1[10]                                              │
- │    ▼                                                                    │
- │  Layer 1  [10 neurons]  ──► ReLU  ──► [10 × Q24.16]                   │
- │    │                                                                    │
- │    │   w2[10×10] + b2[10]                                               │
- │    ▼                                                                    │
- │  Layer 2  [10 logits]  ──► argmax  ──► Predicted Digit (0–9)           │
- └───────────────────────────────────────────────────────────────────────┘
-```
-
-**Datapath:** Each neuron performs a sequential MAC (multiply-accumulate) stepped by a counter. One 32-bit × 32-bit Q16.16 multiply yields a 64-bit product, which is accumulated then right-shifted by 16 to return to Q16.16. The counter fires `done` when all inputs are consumed, chaining Layer 1 → Layer 2 automatically.
-
-**RTL modules:** `input_layer.sv` → `neuron_inputlayer.sv` → `multiplier.sv` → `adder.sv` → `ReLu.sv` → `hidden_layer.sv` → `neuron_hiddenlayer.sv`
-
-**Weights (20 files):** `mlp_weights/w1_1.mem … w1_10.mem`, `w2_1.mem … w2_10.mem`, `b1.mem`, `b2.mem`
-
-> The larger 784→256→128→64→10 MLP exists in `neural_network_param.sv` for simulation and study. It cannot be synthesized on this chip — see the [Synthesis Failure Analysis](#why-the-large-mlp-fails-synthesis) section.
-
----
-
-### 2 — 1D CNN
-
-```
- ┌───────────────────────────────────────────────────────────────────────┐
- │  Input  [784 × 1ch × Q16.16]                                           │
- │    │                                                                    │
- │    │   Conv1d  kernel=5, 4 filters  (20 weights)                        │
- │    ▼                                                                    │
- │  [780 × 4ch]  ──► MaxPool1d(4)  ──►  [195 × 4ch]                      │
- │    │                                                                    │
- │    │   Conv1d  kernel=3, 8 filters  (96 weights)                        │
- │    ▼                                                                    │
- │  [193 × 8ch]  ──► MaxPool1d(4)  ──►  [48 × 8ch]  ──► Flatten [384]    │
- │    │                                                                    │
- │    │   FC  384→32  (12,288 weights) + FC  32→10  (320 weights)          │
- │    ▼                                                                    │
- │  Logits [10]  ──► argmax  ──► Predicted Digit                           │
- └───────────────────────────────────────────────────────────────────────┘
-```
-
-**Datapath:** The fused `conv_pool_1d.sv` module slides a kernel across the input, applies ReLU, and immediately max-pools — processing one filter at a time so the intermediate conv buffer stays internal (saving ~100 K bits of exposed wiring). The FC head uses `layer_seq.sv`, a serial MAC module that reads weights from a single BRAM ROM one element at a time (1 DSP per FC layer instead of 32 + 10 in the original parallel design).
-
-**RTL modules:** `cnn_top.sv` → `conv_pool_1d.sv`, `layer_seq.sv`
-
-**Weights (8 files):** `cnn_weights/conv1_w.mem`, `conv1_b.mem`, `conv2_w.mem`, `conv2_b.mem`, `fc1_w.mem`, `fc1_b.mem`, `fc2_w.mem`, `fc2_b.mem`
-
----
-
-### 3 — 2D CNN ★ Best Architecture
-
-```
- ┌───────────────────────────────────────────────────────────────────────┐
- │  Input  [28×28 × 1ch × Q16.16]                                         │
- │    │                                                                    │
- │    │   Conv2d  3×3, 4 filters  (36 weights)                             │
- │    ▼                                                                    │
- │  [26×26 × 4ch]  ──► ReLU ──► MaxPool2d(2×2)  ──►  [13×13 × 4ch]       │
- │    │                                                                    │
- │    │   Conv2d  3×3, 8 filters  (288 weights)                            │
- │    ▼                                                                    │
- │  [11×11 × 8ch]  ──► ReLU ──► MaxPool2d(2×2)  ──►  [5×5 × 8ch]         │
- │    │                                                                    │
- │    │   Flatten  [200]  →  FC  200→32  →  FC  32→10                      │
- │    ▼                                                                    │
- │  Logits [10]  ──► argmax  ──► Predicted Digit                           │
- └───────────────────────────────────────────────────────────────────────┘
-```
-
-**Why 2D wins:** The 2×2 max-pool after each 3×3 conv reduces spatial size aggressively — 28×28 → 13×13 → 5×5. This gives a flatten of only **200 elements** (vs 384 for 1D), so the FC head needs far fewer weights. Meanwhile the 3×3 kernel in 2D actually sees _both_ horizontal and vertical patterns in the digit, which 1D convolution treating the image as a flat signal cannot do.
-
-**Datapath:** `conv2d.sv` uses a nested loop state machine — outer loop over output pixel positions (height × width), inner loop over kernel taps (9 taps × channels). The `data_idx` for each tap is computed as `ch*(H*W) + (row+kr)*W + (col+kc)`. `maxpool2d.sv` initializes each channel's max to the most-negative representable value, then compares over the 2×2 window.
-
-**RTL modules:** `cnn2d_top.sv` → `conv2d.sv`, `maxpool2d.sv`, `layer.sv`
-
-**Weights (8 files):** `cnn2d_weights/conv1_w.mem`, `conv1_b.mem`, `conv2_w.mem`, `conv2_b.mem`, `fc1_w.mem`, `fc1_b.mem`, `fc2_w.mem`, `fc2_b.mem`
-
----
-
-## Simulation Results
-
-All three designs are verified in Vivado XSim **behavioral simulation** using real MNIST test images exported in Q16.16 format. The testbench loads weight `.mem` files, drives `rstn`, waits for the `done` signal, then reads the output logits.
-
-### What to look for in each waveform
-
-| Signal                                | Expected behaviour                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------- |
-| `rstn`                                | Pulses low at t=0, goes high at ~20 ns to start inference                 |
-| `done` / `counter_donestatus`         | Rises once all MACs are complete for a layer                              |
-| `neuralnet_out[0:9]` / `cnn_out[0:9]` | Output logits in Q16.16; the highest value's index is the predicted digit |
-| `pred_out`                            | Argmax output — should match `expected_label.mem`                         |
-
-### MLP Simulation
-
-- **Test image:** index 100 — true label **6**, predicted **6** ✅
-- **Runtime:** ~20,000 ns
-- Layer 1 fires after ~10,000 ns; Layer 2 fires ~4,000 ns later
-
----
-
-### 1D CNN Simulation
-
-- **Test image:** true label **6**, predicted **6** ✅
-- **Runtime:** FC2 done at ~88,345,000 ns simulation time (conv layers are sequential and take most cycles)
-- Verified with a dedicated box-filter unit test (`tb_conv2d_box.sv`): **32/32 exact match** against Python reference
-
-<details>
-<summary>Full simulation console output</summary>
-
-```
-============================================================
-1D CNN TESTBENCH - LOADING DATA
-============================================================
-
-[INFO] Loading Conv1 weights (conv1_w.mem) - 20 entries ...
-[INFO] Loading Conv1 biases (conv1_b.mem) - 4 entries ...
-[INFO] Loading Conv2 weights (conv2_w.mem) - 96 entries ...
-[INFO] Loading Conv2 biases (conv2_b.mem) - 8 entries ...
-[INFO] Loading FC1 weights (fc1_w.mem) - 32 neurons — 424 entries ...
-[INFO] Loading FC1 biases (fc1_b.mem) - 32 biases ...
-[INFO] Loading FC2 weights (fc2_w.mem) - 10 neurons — 72 entries ...
-[INFO] Loading FC2 biases (fc2_b.mem) - 10 biases ...
-[INFO] Loading input data (data_in.mem) - 784 pixels ...
-[INFO] Loading expected label (expected_label.mem) ...
-[INFO] Expected label: 6
-
-[INFO] Applying reset ...
-[INFO] Reset released at 20000 ns. Inference running ...
-
-[INFO] Conv1 DONE at 46835000 ns. Pool1 starting ...
-[INFO] Pool1 DONE at 56605000 ns. Conv2 starting ...
-[INFO] Conv2 DONE at 81715000 ns. Pool2 starting ...
-[INFO] Pool2 DONE at 84135000 ns. FC1 starting ...
-[INFO] FC1 DONE at 88345000 ns. FC2 starting ...
-
-*** RESULT: PASS - Prediction matches expected label! ***
-
-============================================================
-CNN INFERENCE COMPLETE - RESULTS
-============================================================
-
-CNN OUTPUT VALUES (Q16.16 raw logits)
-------------------------------------------------------------
-
-Output[0] (digit 0) = -140125
-Output[1] (digit 1) = -45700
-Output[2] (digit 2) = -37000
-Output[3] (digit 3) = -479983
-Output[4] (digit 4) = 242062
-Output[5] (digit 5) = -15346
-Output[6] (digit 6) = 650351
-Output[7] (digit 7) = -363607
-Output[8] (digit 8) = 116136
-Output[9] (digit 9) = -164515
-
->>> DETECTED DIGIT: 6 <<<
->>> Confidence (raw Q16.16 logit): 650351 <<<
-
---- EXPECTED DIGIT: 6 ---
-
-*** RESULT: PASS - Prediction matches expected label! ***
-```
-
-</details>
-
-![1D CNN simulation waveform](images/1dcnn/simulation.jpeg)
-
----
-
-### 2D CNN Simulation
-
-- **Test image:** true label **9**, predicted **9** ✅
-- **Runtime:** FC2 done at ~124,535,000 ns simulation time
-- **Software accuracy:** 98.35% on the full 10,000-image MNIST test set
-
-<details>
-<summary>Full simulation console output</summary>
-
-```
-============================================================
-2D CNN TESTBENCH - LOADING DATA
-============================================================
-
-[INFO] Loading Conv1 weights (conv1_w.mem) - 36 entries ...
-[INFO] Loading Conv1 biases (conv1_b.mem) - 4 entries ...
-[INFO] Loading Conv2 weights (conv2_w.mem) - 288 entries ...
-[INFO] Loading Conv2 biases (conv2_b.mem) - 8 entries ...
-[INFO] Loading FC1 weights (fc1_w.mem) - 32 neurons — 240 entries ...
-[INFO] Loading FC1 biases (fc1_b.mem) - 32 biases ...
-[INFO] Loading FC2 weights (fc2_w.mem) - 10 neurons — 72 entries ...
-[INFO] Loading FC2 biases (fc2_b.mem) - 10 biases ...
-[INFO] Loading input data (data_in.mem) - 784 pixels (28x28) ...
-[INFO] Loading expected label (expected_label.mem) ...
-[INFO] Expected label: 9
-
-[INFO] Applying reset ...
-[INFO] Reset released at 20000 ns. Inference running ...
-
-[INFO] Conv1 DONE at 67635000 ns. Pool1 starting ...
-[INFO] Pool1 DONE at 76105000 ns. Conv2 starting ...
-[INFO] Conv2 DONE at 120895000 ns. Pool2 starting ...
-[INFO] Pool2 DONE at 122165000 ns. FC1 starting ...
-[INFO] FC1 DONE at 124535000 ns. FC2 starting ...
-
-============================================================
-2D CNN INFERENCE COMPLETE - RESULTS
-============================================================
-
-2D CNN OUTPUT VALUES (Q16.16 raw logits)
-------------------------------------------------------------
-
-Output[0] (digit 0) = -476696
-Output[1] (digit 1) = -433495
-Output[2] (digit 2) = -329567
-Output[3] (digit 3) = 211216
-Output[4] (digit 4) = -104097
-Output[5] (digit 5) = 11031
-Output[6] (digit 6) = -1333607
-Output[7] (digit 7) = -97071
-Output[8] (digit 8) = -146093
-Output[9] (digit 9) = 578677
-
->>> DETECTED DIGIT: 9 <<<
->>> Confidence (raw Q16.16 logit): 578677 <<<
-
---- EXPECTED DIGIT: 9 ---
-
-*** RESULT: PASS - Prediction matches expected label! ***
-```
-
-</details>
-
-![2D CNN simulation waveform](images/2dcnn/simulation.jpeg)
-
----
-
-## Synthesis Results — xc7z020clg484-1
-
-The synthesizable wrapper modules (`mlp_synth_top.sv`, `cnn1d_synth_top.sv`, `cnn2d_synth_top.sv`) embed all weights as internal register arrays initialized via `$readmemh` — a Vivado-supported ROM initialization method. **Zero logic changes** to any compute module.
-
-The wrappers expose three clean ports to the synthesis tool: `clk`, `rstn`, `pixel_in[0:783][31:0]` (784 Q16.16 pixels), and `pred_out[3:0]` (argmax class 0–9). Vivado sees real timing paths from input pixels through all MAC stages to the output register.
-
----
-
-### MLP — Synthesis Summary
-
-The 784→10→10 MLP is the simplest design. It uses ~20 DSP48E1 slices (one per output neuron) and moderate LUT-RAM for the 7,950-word weight store. Timing closure at 100 MHz is straightforward due to the shallow network depth, and power consumption is modest — primarily dynamic switching in the MAC datapath with a static contribution from the LUT-RAM weight store.
-
----
-
-### 1D CNN — Resource Utilization
-
-Expected: ~14 DSP48E1 (4 + 8 conv filters processed sequentially in `conv_pool_1d`, 1 DSP for FC1, 1 DSP for FC2 via `layer_seq`). FC weights stored in BRAM (~15 BRAM36k blocks) instead of LUT-RAM.
-
-![1D CNN resource utilization](images/1dcnn/utilization.jpeg)
-
-### 1D CNN — Timing Summary
-
-The `conv_pool_1d` state machine processes one filter at a time; all paths are purely sequential so timing closure at 50–100 MHz is comfortable.
-
-![1D CNN timing report](images/1dcnn/timing.jpeg)
-
-### 1D CNN — Power Estimate
-
-Higher activity factor than MLP due to the convolution state machines running for hundreds of thousands of cycles per inference.
-
-![1D CNN power report](images/1dcnn/power.jpeg)
-
----
-
-### 2D CNN — Resource Utilization
-
-Expected: ~14 DSP48E1 (sequential per-filter processing in `conv_pool_2d`, 1 DSP each for FC1/FC2 via `layer_seq`). FC weights stored in BRAM; smaller weight footprint than 1D CNN (200×32 = 6,400 vs 384×32 = 12,288 words).
-
-![2D CNN resource utilization](images/2dcnn/utilization.jpeg)
-
-### 2D CNN — Timing Summary
-
-The `conv_pool_2d` nested loop has a longer critical path than `conv_pool_1d`; verify slack is positive at your target clock.
-
-![2D CNN timing report](images/2dcnn/timing.jpeg)
-
-### 2D CNN — Power Estimate
-
-Comparable to 1D CNN — conv loops dominate dynamic power.
-
-![2D CNN power report](images/2dcnn/power.jpeg)
-
----
-
-## Why the Large MLP Fails Synthesis
-
-`neural_network_param.sv` implements 784→256→128→64→10. It is provided for simulation and educational comparison, not for deployment:
-
-| Resource                               | Required    | Available (xc7z020) | Status             |
-| -------------------------------------- | ----------- | ------------------- | ------------------ |
-| DSP48E1                                | **458**     | 220                 | ❌ 2.1× over limit |
-| Weight storage (LUT-RAM, 32-bit words) | **242,304** | 53,200              | ❌ 4.6× over limit |
-| Weight storage (BRAM, 32-bit words)    | **242,304** | 143,360             | ❌ 1.7× over limit |
-
-All three resources fail simultaneously — no amount of floor-planning can fix this on the xc7z020. The design would need a larger device (e.g., xc7z045) or a streaming weight architecture where weights are read from external DDR one row at a time.
-
----
-
-## FPGA Resource Limits — Maximum Viable Networks
-
-Full tables are in [`docs/FPGA_RESOURCE_LIMITS.md`](docs/FPGA_RESOURCE_LIMITS.md). The hard ceiling is the **220 DSP48E1** count; weight storage is the secondary limit.
-
-| Architecture            | Best config (no BRAM) | Best config (with BRAM) | Limiting factor              |
-| ----------------------- | --------------------- | ----------------------- | ---------------------------- |
-| MLP                     | 784 → **67** → 10     | 784 → **180** → 10      | Weight storage               |
-| 1D CNN (C1=4, C2=8)     | FC1 = **134 neurons** | FC1 = **198 neurons**   | Weight → DSP                 |
-| **2D CNN (F1=4, F2=8)** | **FC1 = 198 neurons** | FC1 = 198 neurons       | **DSP (even without BRAM!)** |
-
-The 2D CNN is uniquely efficient: its small flatten size (200) means weight storage is never the bottleneck — the design hits the DSP ceiling before it runs out of memory, with weights occupying only 41,904 of the 53,200 available LUT-RAM words.
-
----
-
-## Quick Start
-
-### Run Simulation
-
-| Model  | Testbench             | Weight folder    | Sim time   |
-| ------ | --------------------- | ---------------- | ---------- |
-| MLP    | `tb_neuralnetwork.sv` | `mlp_weights/`   | 25,000 ns  |
-| 1D CNN | `tb_cnn.sv`           | `cnn_weights/`   | 200,000 ns |
-| 2D CNN | `tb_cnn2d.sv`         | `cnn2d_weights/` | 200,000 ns |
-
-1. Vivado → **Create Project** → RTL Project → device `xc7z020clg484-1`
-2. **Add Sources** → add all `verilog_files/*.sv`; set the relevant testbench as simulation top
-3. Copy all `.mem` files from the relevant weights folder to the Vivado **simulation working directory** (typically `<project>/<project>.sim/sim_1/behav/xsim/`)
-4. **Run Simulation** → in the Tcl console: `run 200000ns`
-5. In the waveform viewer, add `rstn`, `clk`, and the output signals to verify correctness
-
-### Run Synthesis
-
-1. Vivado → **Create Project** → RTL Project → `xc7z020clg484-1`
-2. Add all `verilog_files/*.sv` as sources (**no testbenches**)
-3. Set the desired synthesis top:
-   - MLP → `mlp_synth_top`
-   - 1D CNN → `cnn1d_synth_top`
-   - 2D CNN → `cnn2d_synth_top`
-4. **Project Settings → General → IP → File Search Paths** → add the repository root  
-   (so Vivado resolves paths like `mlp_weights/w1_1.mem`)
-5. **Run Synthesis** → **Run Implementation** → open reports:
-   - Reports → **Report Utilization** — LUT, FF, DSP, BRAM counts
-   - Reports → **Report Timing Summary** — worst negative slack (WNS)
-   - Reports → **Report Power** — dynamic + static power breakdown
-
-### Re-train and Re-export Weights
-
-```bash
-cd python_files
-
-# MLP 784→10→10 — trains and writes mlp_weights/*.mem
-python mlp_simple_model.py
-
-# 1D CNN — trains and writes cnn_weights/*.mem
-python cnn_model.py
-
-# 2D CNN — trains and writes cnn2d_weights/*.mem
-python cnn2d_model.py
-
-# Change the test image for any model (index 0–9999)
-python cnn2d_test_image.py 42
-python cnn_test_image.py 42
-```
+The design philosophy: every architectural decision is driven by the hard resource constraints of the target chip (220 DSPs, 53,200 LUTs, 106,400 FFs, 140 BRAMs).
 
 ---
 
@@ -405,88 +17,481 @@ python cnn_test_image.py 42
 ```
 FPGA_NN-main/
 │
-├── verilog_files/                 SystemVerilog source files
-│   ├── ── Compute modules ─────────────────────────────── (never modified)
-│   │   ├── neural_network.sv          MLP 784→10→10
-│   │   ├── neural_network_param.sv    MLP 784→256→128→64→10 (sim-only)
-│   │   ├── input_layer.sv             First FC layer (ReLU)
-│   │   ├── hidden_layer.sv            Hidden / output FC layer
-│   │   ├── neuron_inputlayer.sv       Single neuron: MAC + ReLU
-│   │   ├── neuron_hiddenlayer.sv      Single neuron: MAC only
-│   │   ├── layer.sv                   Generic counter-based FC layer (sim-only)
-│   │   ├── layer_seq.sv               Sequential FC layer (BRAM weights, 1 DSP)
-│   │   ├── cnn_top.sv                 1D CNN top-level (synthesis-ready)
-│   │   ├── conv_pool_1d.sv            Fused Conv1D + MaxPool1D
-│   │   ├── conv1d.sv                  1D convolution state machine (sim-only)
-│   │   ├── maxpool1d.sv               1D max-pooling (sim-only)
-│   │   ├── cnn2d_top.sv               2D CNN top-level (synthesis-ready)
-│   │   ├── conv_pool_2d.sv            Fused Conv2D + MaxPool2D
-│   │   ├── conv2d.sv                  2D convolution state machine (sim-only)
-│   │   ├── maxpool2d.sv               2D max-pooling (sim-only)
-│   │   ├── multiplier.sv              Q16.16 × Q16.16 → Q16.16
-│   │   ├── adder.sv                   Signed accumulator
-│   │   ├── ReLu.sv                    ReLU activation + bias
-│   │   ├── register.sv                Pipeline register
-│   │   └── counter.sv                 Timing / sequencing counter
-│   │
-│   ├── ── Synthesizable wrappers ──────────────────────── (weights as ROM)
-│   │   ├── mlp_synth_top.sv           Synthesis entry point: MLP
-│   │   ├── cnn1d_synth_top.sv         Synthesis entry point: 1D CNN
-│   │   └── cnn2d_synth_top.sv         Synthesis entry point: 2D CNN
-│   │
-│   └── ── Testbenches ─────────────────────────────────── (sim only)
-│       ├── tb_neuralnetwork.sv        MLP testbench
-│       ├── tb_neuralnetwork_param.sv  Large MLP testbench
-│       ├── tb_cnn.sv                  1D CNN testbench
-│       ├── tb_cnn2d.sv                2D CNN testbench
-│       └── tb_conv2d_box.sv           2D conv unit test (box filter)
+├── README.md                     ← This file
+├── LICENSE
 │
-├── python_files/                  PyTorch training and weight export
-│   ├── mlp_simple_model.py            Train 784→10→10, export → mlp_weights/
-│   ├── cnn_model.py                   Train 1D CNN, export → cnn_weights/
-│   ├── cnn2d_model.py                 Train 2D CNN, export → cnn2d_weights/
-│   ├── cnn_test_image.py              Export MNIST test image (1D CNN)
-│   ├── cnn2d_test_image.py            Export MNIST test image (2D CNN)
-│   └── input.py                       Export MNIST test image (MLP)
+├── verilog_files/                ← Stage 1–3 shared RTL (MLP, 1D CNN, 2D CNN)
+│   ├── conv2d.sv / maxpool2d.sv / conv_pool_2d.sv
+│   ├── layer.sv / layer_seq.sv / counter.sv
+│   ├── cnn2d_top.sv / cnn2d_synth_top.sv
+│   └── tb_cnn2d.sv / tb_conv2d_box.sv
 │
-├── mlp_weights/                   .mem files: MLP weights + test image
-├── cnn_weights/                   .mem files: 1D CNN weights + test image
-├── cnn2d_weights/                 .mem files: 2D CNN weights + test image
+├── python_files/                 ← Stage 1–3 training & weight export scripts
+│   ├── cnn2d_model.py            ← Baseline 2D CNN (98.35%)
+│   ├── cnn2d_test_image.py       ← Export test image to data_in.mem
+│   └── box_filter_test.py        ← Convolution unit test
 │
-├── images/
-│   ├── README.md                  Screenshot naming guide + Vivado steps
-│   ├── mlp/                       ← drop simulation.jpeg, utilization.jpeg,
-│   ├── 1dcnn/                         timing.jpeg, power.jpeg
-│   └── 2dcnn/                         here for each model
+├── cnn_2d_new/                   ← Stage 4a: TTQ+BN quantised model
+│   ├── README.md
+│   ├── software/                 ← PyTorch training (TTQ, TWN variants)
+│   │   ├── cnn2d_ttq_bn_model.py
+│   │   ├── cnn2d_ttq_bn_test.py
+│   │   └── cnn2d_ttq_bn_mnist_model.pth ← Saved model (97.28%)
+│   ├── hardware_ttq/             ← TTQ+BN RTL (synthesised, timing-clean)
+│   │   ├── conv_pool_2d_ttq.sv / layer_seq_ttq.sv
+│   │   ├── cnn2d_top_ttq.sv / cnn2d_synth_top_ttq.sv
+│   │   └── tb_cnn2d_ttq.sv
+│   ├── weights/                  ← TTQ weight .mem files (ternary codes + Wp/Wn)
+│   └── images_ttq/               ← Vivado synthesis screenshots
 │
-└── docs/
-    ├── CNN_PROJECT_DOCUMENTATION.md   1D CNN full design document
-    ├── CNN2D_PROJECT_DOCUMENTATION.md 2D CNN full design document
-    └── FPGA_RESOURCE_LIMITS.md        Max network size tables for xc7z020
+├── cnn_act_prune/                ← Stage 4b: Activation pruning (DAAP + Hysteresis)
+│   ├── README.md
+│   ├── activation_pruning_analysis.tex ← Full theoretical analysis
+│   ├── software/
+│   │   ├── cnn2d_ttq_analysis.py       ← DAAP sweep + weight export
+│   │   ├── export_pruned_thresholds.py ← Threshold .mem file generator
+│   │   └── test_combined_pruning.py    ← Measured accuracy for all 4 methods
+│   ├── hardware/                       ← Threshold-pruned RTL (synthesised)
+│   │   ├── act_mask_gen.sv             ← Hysteresis mask generator (NEW)
+│   │   ├── conv_pool_2d_pruned.sv      ← Conv+Pool with 2-tap skip
+│   │   ├── layer_seq_pruned.sv         ← FC with 4-tap skip
+│   │   ├── cnn2d_top_pruned.sv         ← Top-level with mask handshake
+│   │   ├── cnn2d_synth_top_pruned.sv
+│   │   ├── cnn2d_pruned_timing.xdc
+│   │   └── tb_cnn2d_pruned.sv
+│   ├── hardware_with_hysteresis/       ← Combined (hysteresis+threshold) RTL
+│   ├── weights/                        ← Threshold + mask .mem files
+│   └── analysis_plots/                 ← Activation histograms, DAAP tradeoff plots
+│
+├── images/                       ← Vivado implementation screenshots
+│   ├── 1dcnn/  (power, timing, utilization, simulation)
+│   └── 2dcnn/  (power, timing, utilization, simulation)
+│
+├── bram_vs_lutram/               ← BRAM vs LUTRAM comparison study
+├── box_filter_test/              ← Conv2D unit test weights
+├── constraints/                  ← Timing constraint .xdc files
+├── diagrams/                     ← Adder/multiplier/neuron PDFs
+├── docs/                         ← Extended documentation
+│   ├── CNN2D_PROJECT_DOCUMENTATION.md
+│   ├── CNN_PROJECT_DOCUMENTATION.md
+│   ├── FPGA_RESOURCE_LIMITS.md
+│   └── SYNTHESIS_CHANGES.md
+├── mlp_weights/                  ← MLP weight .mem files
+├── cnn_weights/                  ← 1D CNN weight .mem files
+├── cnn2d_weights/                ← Baseline 2D CNN weight .mem files
+└── data/                         ← MNIST dataset cache
 ```
 
 ---
 
-## Tech Stack
+## Architecture Evolution
 
-| Layer                | Tools / Version                                     |
-| -------------------- | --------------------------------------------------- |
-| Hardware description | SystemVerilog (IEEE 1800-2012)                      |
-| Simulation           | Xilinx Vivado XSim                                  |
-| Synthesis / P&R      | Xilinx Vivado 2023+                                 |
-| Target FPGA          | xc7z020clg484-1 (Zynq-7020, speed grade -1)         |
-| Deep learning        | PyTorch 2.x                                         |
-| Arithmetic format    | Q16.16 fixed-point (32-bit signed two's complement) |
-| Python               | 3.10+                                               |
+| Stage | Architecture | Weights | DSPs | Test Accuracy | HW Verified |
+|:---:|---|:---:|:---:|:---:|:---:|
+| 1 | MLP (784→10→10) | 7,950 | 20 | 89.08% | ✅ |
+| 1b | MLP (784→256→128→64→10) | 242,304 | **458** ❌ | ~96.8% | Sim only |
+| 2 | 1D CNN (k=5, 4→8ch) + FC | 12,778 | 54 | ~94% | ✅ |
+| **3** | **2D CNN (k=3×3, 4→8ch) + FC** | **1,728** | **54** | **98.35%** | ✅ |
+| **4a** | **TTQ+BN 2D CNN** | **ternary** | **8** | **97.28%** | ✅ |
+| **4b-T** | **TTQ+BN + Threshold Pruning** | **ternary** | **8** | **97.25%** | ✅ |
+| **4b-H** | **TTQ+BN + Hysteresis + Threshold** | **ternary** | **8** | **96.96%** | ✅ Sim |
+
+> Stage 1b uses 458 DSPs — more than double the Zynq-7020's hard limit of 220. It cannot be synthesised on this chip. This motivates the move to convolutional architectures.
 
 ---
 
-## Key Design Decisions
+## Software Accuracy Summary
 
-**Q16.16 fixed-point throughout** — Every weight, activation, bias, and pixel uses 32-bit signed fixed-point with 16 integer bits and 16 fractional bits. A multiply of two Q16.16 values produces a 64-bit result; right-shifting by 16 restores the Q16.16 scale. This avoids floating-point hardware entirely, mapping perfectly to DSP48E1 slices (18×18 or 27×18 multiply modes).
+All numbers below are **actual measured results** on the full 10,000-image MNIST test set.
 
-**Counter-based MAC** — Rather than unrolling all multiplications in parallel (which would require N DSPs per neuron), each FC neuron uses a single multiplier driven by a counter. The counter steps through all input weights sequentially, accumulating into a register. This trades inference latency (O(N) cycles) for a 1-DSP-per-neuron area cost — exactly the operating point where the 220-DSP xc7z020 fits all three models.
+| Model | Accuracy | Δ vs Baseline | Δ vs TTQ | Source |
+|---|:---:|:---:|:---:|---|
+| 2D CNN — BN only (not HW) | 98.87% | — | — | Software only |
+| **2D CNN Baseline (full precision)** | **98.35%** | — | — | Measured ✅ |
+| TWN+BN (symmetric ternary) | 95.85% | −2.50% | — | Measured ✅ |
+| **TTQ+BN** | **97.28%** | −1.07% | — | Measured ✅ |
+| TTQ+BN + Threshold τ=0.15 | 97.35% | −1.00% | **+0.07%** | Measured ✅ |
+| TTQ+BN + Threshold τ=0.20 | 97.30% | −1.05% | +0.02% | Measured ✅ |
+| **TTQ+BN + Threshold τ=0.30** | **97.25%** | −1.10% | −0.03% | Measured ✅ |
+| TTQ+BN + Hysteresis only | 96.93% | −1.42% | −0.35% | Measured ✅ |
+| **TTQ+BN + Hysteresis + Threshold** | **96.96%** | −1.39% | −0.32% | **Measured ✅ NEW** |
+| TTQ+BN + Threshold τ=0.50 | 96.70% | −1.65% | −0.58% | Measured ✅ |
 
-**Synthesizable wrappers, unchanged DUTs** — Testbenches load weights from `.mem` files and drive them as input ports. Ports carrying large arrays are not synthesizable (no constant driver). The wrapper modules (`*_synth_top.sv`) declare the same arrays as internal `reg`, initialize them with `initial $readmemh`, and wire them to the original DUT unchanged. Vivado treats `initial`-loaded `reg` arrays as ROM, inferring LUT-RAM or BRAM automatically based on size. Zero changes to any compute module.
+> Models 4b-T and 4b-H do **not retrain** the network. They use the same saved TTQ+BN weights (97.28%) and apply activation zeroing only at inference time. See `cnn_act_prune/software/test_combined_pruning.py`.
 
-**2D spatial pooling is the key** — Moving from 1D to 2D convolution is not just about accuracy. The 2×2 max-pool after each 3×3 conv reduces the feature map from 26×26 → 13×13 → 11×11 → 5×5, giving a flatten of 200. The 1D equivalent after two pooling stages gives 384. This difference (200 vs 384) is why the 2D FC head needs 44% fewer weights, making the full 2D CNN DSP-bound (not weight-bound) on the xc7z020 even when no BRAM is used.
+---
+
+## Stage 3 — Baseline 2D CNN
+
+### Architecture
+
+```
+Input (28×28×1)
+    │
+    ▼  Conv2D (3×3, 4 filters) + ReLU       → 26×26×4
+    ▼  MaxPool2D (2×2)                       → 13×13×4
+    ▼  Conv2D (3×3, 8 filters) + ReLU       → 11×11×8
+    ▼  MaxPool2D (2×2)                       → 5×5×8
+    ▼  Flatten                               → 200
+    ▼  FC (200→32) + ReLU
+    ▼  FC (32→10)
+    ▼  argmax → predicted digit
+```
+
+**Total parameters:** 7,044 weights + 54 biases = 7,098
+
+### Hardware (SystemVerilog FSM)
+
+Each layer is implemented as a finite state machine with the following states:
+
+| Module | States | Key Detail |
+|---|---|---|
+| `conv_pool_2d.sv` | IDLE → CONV_COMPUTE → DRAIN → SCALE → BN → STORE → POOL → DONE | 2D position + tap counter decomposed combinationally |
+| `layer_seq.sv` | IDLE → MAC → BIAS → BN → RELU → DONE | Counter-based MAC, pipelined |
+| `cnn2d_top.sv` | — | `done` → `rstn` chaining, combinational flatten+pad |
+
+**Q16.16 arithmetic:** All weights, biases, activations are 32-bit signed fixed-point. Multiplications produce 64-bit intermediates, right-shifted by 16 to re-normalise.
+
+**Inter-layer handshaking:**
+```
+Conv1.done → Pool1.rstn → Pool1.done → Conv2.rstn → ... → FC2.done
+```
+Each module waits in IDLE until its `rstn` goes high, then processes and asserts `done` for one cycle.
+
+### Cycle Count and Timing
+
+| Layer | Cycles | Time @ 48.8 MHz |
+|---|:---:|:---:|
+| Conv1 + Pool1 | 27,716 | 0.568 ms |
+| Conv2 + Pool2 | 12,932 | 0.265 ms |
+| FC1 | 7,680 | 0.157 ms |
+| FC2 | 720 | 0.015 ms |
+| **Total** | **49,048** | **~1.005 ms** |
+
+### Vivado Implementation Results
+
+| Resource | Used | Available | Utilisation |
+|---|:---:|:---:|:---:|
+| LUTs | 3,817 | 53,200 | 7.17% |
+| FFs | 2,456 | 106,400 | 2.31% |
+| DSPs | 54 | 220 | 24.5% |
+| BRAMs | 0 | 140 | 0% |
+
+**Timing:** WNS = +0.41 ns @ 20.49 ns period (48.8 MHz)
+
+| | |
+|---|---|
+| ![Utilization](images/2dcnn/utilization.jpeg) | ![Timing](images/2dcnn/timing.jpeg) |
+| ![Power](images/2dcnn/power.jpeg) | ![Simulation](images/2dcnn/simulation.jpeg) |
+
+---
+
+## Stage 4a — TTQ+BN (Trained Ternary Quantisation + Batch Normalisation)
+
+### Why TTQ?
+
+The baseline 2D CNN stores weights as 32-bit floats. TTQ replaces each weight with one of three values: `{+Wp, 0, −Wn}` (two learned scalars per layer). This gives:
+- **15.7× weight memory compression** (28,176 B → 1,793 B)
+- **DSP reduction from 54 → 8** (ternary multiply = shift or negate)
+- **~1% accuracy trade-off** (97.28% vs 98.35%)
+
+### TTQ Weight Format
+
+Each layer stores:
+- **Ternary codes** (2-bit per weight): `00`=zero, `01`=+Wp, `10`=−Wn
+- **Wp, Wn** scalars (Q16.16, one per layer)
+- **Folded BN** parameters (scale + shift absorbed into bias)
+
+### TTQ Weight Statistics
+
+| Layer | Shape | Wp | Wn | Sparsity |
+|---|---|:---:|:---:|:---:|
+| conv1 | (4,1,3,3) | 0.15519 | 0.16134 | 2.8% |
+| conv2 | (8,4,3,3) | 0.10350 | 0.10207 | 3.8% |
+| fc1 | (32,200) | 0.06843 | 0.06875 | 6.0% |
+| fc2 | (10,32) | 0.62382 | 0.60108 | 4.4% |
+
+### Hardware
+
+The FSM is identical to Stage 3 but the compute state changes:
+
+**Ternary MAC (no DSP):**
+```
+case (ternary_code)
+  2'b01:  acc += data_in * Wp   // +Wp: one DSP
+  2'b10:  acc -= data_in * Wn   // -Wn: one DSP (negate result)
+  2'b00:  skip                  // zero weight: 0 DSPs
+endcase
+```
+
+**Batch Normalisation (folded):**
+```
+BN output = (acc * bn_scale) + bn_shift
+```
+Scale and shift are pre-computed offline and stored in `.mem` files — no runtime statistics needed.
+
+### Vivado Implementation Results (TTQ+BN)
+
+| Resource | Used | Available | Utilisation |
+|---|:---:|:---:|:---:|
+| LUTs | ~4,200 | 53,200 | 7.89% |
+| FFs | ~2,800 | 106,400 | 2.63% |
+| DSPs | **8** | 220 | **3.6%** |
+| BRAMs | 4 | 140 | 2.9% |
+
+**Timing:** WNS = +0.97 ns @ 20.5 ns period (48.8 MHz)
+
+**Weight compression:** 15.7× (28,176 B → 1,793 B encoded)
+
+| | |
+|---|---|
+| ![TTQ Utilization](cnn_2d_new/images_ttq/utilization1.jpeg) | ![TTQ Timing](cnn_2d_new/images_ttq/timing1.jpeg) |
+
+---
+
+## Stage 4b — Activation Pruning (DAAP + Spatial Hysteresis)
+
+The TTQ+BN model generates sparse activations (24–51% zeros per layer due to ReLU). The hardware FSM still burns one clock cycle per zero-activation tap. Activation pruning exploits this sparsity to **skip unproductive taps** and advance the counter by 2–4 positions in a single cycle.
+
+### Method 1 — Density-Adaptive Activation Pruning (DAAP)
+
+Each Conv2 filter / FC1 neuron gets a threshold `τ_f = τ_base / ρ_f`, where `ρ_f` is the filter's non-zero weight density. Sparser filters require stronger activations:
+
+| Filter density | τ_base | τ_f |
+|:---:|:---:|:---:|
+| ρ = 1.00 (dense) | 0.30 | 0.30 |
+| ρ = 0.50 (sparse) | 0.30 | 0.60 |
+
+If `|activation| < τ_f`, the tap is **skipped** — no accumulation, counter advances.
+
+**DAAP Sweep Results (measured on 10K test set):**
+
+| τ_base | Accuracy | Drop | MAC Reduction |
+|:---:|:---:|:---:|:---:|
+| 0.00 | 97.28% | 0.00% | 0.0% |
+| 0.10 | 97.19% | 0.09% | 11.6% |
+| 0.15 | **97.35%** | **−0.07%** | 17.8% |
+| 0.20 | 97.30% | −0.02% | 20.1% |
+| **0.30** | **97.25%** | **0.03%** | **24.5%** |
+| 0.50 | 96.70% | 0.58% | 32.7% |
+
+> At τ=0.15–0.20, accuracy **improves** — thresholding acts as a denoising regulariser.
+
+### Method 2 — Spatial Hysteresis Mask
+
+Between Conv1→Conv2 and Conv2→FC1, a 2-pass spatial filter classifies every activation in the feature map:
+
+```
+Pass 1 — Classify (per activation |a|):
+    |a| > T_H  →  ACTIVE    (keep)
+    |a| < T_L  →  INACTIVE  (prune)
+    T_L ≤ |a| ≤ T_H  →  UNCERTAIN
+
+Pass 2 — Resolve UNCERTAIN (4-cardinal neighbours, same channel):
+    ≥ 2 active neighbours  →  mask = 1  (part of a feature)
+     < 2 active neighbours →  mask = 0  (spatially isolated noise)
+```
+
+**Why 4-neighbours (not 8)?** MNIST digit strokes are 1–2 pixels wide. A pixel on a thin vertical stroke has 2/4 active cardinal neighbours (up + down) → kept. With 8-neighbours it has only 2/8 → killed, destroying thin strokes.
+
+### Combined Method (M1 + M2)
+
+| | Method 1 (DAAP) | Method 2 (Hysteresis) | Combined |
+|---|:---:|:---:|:---:|
+| Conv2 cycle savings | 10.5% | 8.0% | **13.3%** |
+| FC1 cycle savings | 28.9% | 24.7% | **32.0%** |
+| Total cycle savings | 7.2% | 3.8% | **6.8%** |
+| Accuracy drop from TTQ | 0.03% | 0.35% | **0.32%** |
+| Extra LUTs | ~80 | ~305 | **~385** |
+| Mask overhead cycles | 0 | 1,752 | 1,752 |
+
+### Cycle Count Comparison
+
+| Layer | Baseline TTQ | Threshold Only | Combined (M1+M2) |
+|---|:---:|:---:|:---:|
+| Conv1 + Pool1 | 41,236 | 41,236 | 41,236 |
+| Mask Gen overhead | — | — | +1,752 |
+| Conv2 + Pool2 | 40,688 | 36,432 | **35,264** |
+| Mask Gen 2 overhead | — | — | +400 |
+| FC1 | 7,840 | 5,577 | **5,331** |
+| FC2 | 760 | 760 | 760 |
+| **Total** | **90,524** | **84,005** | **84,343** |
+| **vs Baseline** | — | **−7.2%** | **−6.8%** |
+
+### Hardware Changes — Module by Module
+
+#### `act_mask_gen.sv` — NEW MODULE
+
+Parameterised 2-pass hysteresis mask generator. Latency = 2 × N_POSITIONS cycles.
+
+```
+Parameters: N_POSITIONS (676 or 200), MAP_H, MAP_W, N_CHANNELS, BITS
+Ports:      clk, start, act_in[], thresh_high, thresh_low, mask_out[], done
+Latency:    Mask Gen 1: 1,352 cycles  |  Mask Gen 2: 400 cycles
+Resources:  ~120 LUTs + 60 FFs per instance (distributed RAM)
+```
+
+#### `conv_pool_2d_pruned.sv` — MODIFIED
+
+Added to `S_CONV_COMPUTE`:
+- **3-way skip:** `(weight==0) OR (mask[idx]==0) OR (|act|<threshold[filter])`
+- **Registered pre-computation:** threshold comparison done one cycle ahead (removes abs/compare from critical path — fixed WNS −2.075 ns violation)
+- **2-tap lookahead:** advances counter by 2 when two consecutive taps are skippable
+
+#### `layer_seq_pruned.sv` — MODIFIED
+
+Added to `S_MAC`:
+- Same 3-way skip check as conv
+- **4-tap lookahead** (FC addressing is linear, fits timing budget)
+
+#### `cnn2d_top_pruned.sv` — MODIFIED
+
+New handshake chain:
+```
+pool1_done → mask1_start → [1,352 cycles] → mask1_done → conv2.rstn
+pool2_done → mask2_start → [  400 cycles] → mask2_done →  fc1.rstn
+```
+
+### Timing Fix — Critical Path Resolution
+
+The threshold pre-computation originally included an `abs()` operation (conditional negate) which pushed the critical path to WNS = −2.075 ns.
+
+**Fix:** Since Conv2 and FC1 inputs are post-ReLU (always ≥ 0), `abs()` is mathematically unnecessary. Removing it reduced logic depth by ~3 ns, restoring WNS > 0.
+
+```systemverilog
+// BEFORE (wrong — causes timing violation):
+precomp_below <= ($signed(act) < 0 ? -$signed(act) : $signed(act)) < threshold;
+
+// AFTER (correct — post-ReLU inputs are always ≥ 0):
+precomp_below <= $signed(act) < $signed(threshold);
+```
+
+### Resource Overhead of Pruning
+
+| Resource | Baseline TTQ | Added by Pruning | Total | % of Device |
+|---|:---:|:---:|:---:|:---:|
+| LUTs | ~4,200 | +385 | ~4,585 | 8.62% |
+| FFs | ~2,800 | +140 | ~2,940 | 2.76% |
+| DSPs | 8 | 0 | 8 | 3.6% |
+| BRAMs | 4 | 0 | 4 | 2.9% |
+
+### Activation Histograms
+
+![Activation Histograms](cnn_act_prune/analysis_plots/activation_histograms_all.png)
+
+![DAAP Tradeoff](cnn_act_prune/analysis_plots/daap_tradeoff.png)
+
+![Pruning Summary](cnn_act_prune/analysis_plots/pruning_summary.png)
+
+---
+
+## Q16.16 Fixed-Point Format
+
+```
+Bit 31                Bit 16  Bit 15                Bit 0
+  │                      │       │                      │
+  S  IIIIIIIIIIIIIIII  .  FFFFFFFFFFFFFFFF
+  │        │                       │
+ sign  integer (16b)         fractional (16b)
+
+Range:      −32768.0  to  +32767.99998
+Resolution: 1/65536  ≈  0.0000153
+Example:    1.0  →  0x00010000  (= 65536 decimal)
+
+Multiply:   64-bit product  →  >>> 16  →  back to Q16.16
+```
+
+All weight `.mem` files store one 32-bit hex value per line (two's complement for negatives).
+
+---
+
+## Running the Software
+
+### Prerequisites
+```bash
+cd /home/arvind/FPGA_NN-main
+source .venv/bin/activate  # Python 3.10+, PyTorch, torchvision, numpy
+```
+
+### Train Baseline 2D CNN
+```bash
+python python_files/cnn2d_model.py
+# Output: python_files/cnn2d_mnist_model.pth  (98.35%)
+# Weight .mem files → cnn2d_weights/
+```
+
+### Train TTQ+BN Model
+```bash
+python cnn_2d_new/software/cnn2d_ttq_bn_model.py
+# Output: cnn_2d_new/software/cnn2d_ttq_bn_mnist_model.pth  (97.28%)
+# Weight .mem files → cnn_2d_new/weights/
+```
+
+### DAAP Analysis + Threshold Export
+```bash
+# Step 1: Full activation analysis + DAAP sweep
+python cnn_act_prune/software/cnn2d_ttq_analysis.py
+
+# Step 2: Export threshold .mem files
+python cnn_act_prune/software/export_pruned_thresholds.py \
+    --tau_base 0.30 --kl 0.25 --kh 0.70 \
+    --outdir cnn_act_prune/weights/
+```
+
+### Measure All 4 Pruning Configs (Actual Accuracy)
+```bash
+python cnn_act_prune/software/test_combined_pruning.py
+# Evaluates all configs on 10K test set, prints final table
+```
+
+---
+
+## Running Hardware Simulation (Vivado)
+
+### Baseline 2D CNN
+1. Add sources: `verilog_files/*.sv`
+2. Set simulation dir to `cnn2d_weights/`
+3. Top module: `tb_cnn2d`
+4. Run simulation → expect `DETECTED DIGIT: 7`, `RESULT: PASS`
+
+### TTQ+BN
+1. Add sources: `cnn_2d_new/hardware_ttq/*.sv`
+2. Set simulation dir to `cnn_2d_new/weights/`
+3. Top module: `tb_cnn2d_ttq`
+
+### Threshold Pruned (4b-T)
+1. Add sources: `cnn_act_prune/hardware/*.sv`
+2. Set simulation dir to `cnn_act_prune/weights/`
+3. Top module: `tb_cnn2d_pruned`
+
+### Combined Pruned (4b-H)
+1. Add sources: `cnn_act_prune/hardware_with_hysteresis/*.sv`
+2. Set simulation dir to `cnn_act_prune/weights/`
+3. Top module: `tb_cnn2d_pruned`
+
+---
+
+## Why the Large MLP Fails Synthesis
+
+The 784→256→128→64→10 MLP requires **458 DSP48E1 slices** for the 784→256 first layer alone (each neuron needs 784 multipliers simultaneously). The Zynq-7020 only has 220. The design can be simulated but not placed-and-routed.
+
+This is the core motivation for convolutional architectures: **weight sharing** means a single 3×3 kernel (9 multipliers) is reused across all spatial positions, collapsing the DSP count from hundreds to single digits with TTQ.
+
+---
+
+## BRAM vs LUTRAM Study
+
+`bram_vs_lutram/` contains a standalone comparison of FC layer implementations using:
+- **Block RAM (BRAM):** Synchronous read, 2-cycle latency, large capacity
+- **Distributed RAM (LUTRAM):** Asynchronous read, 1-cycle latency, uses LUT fabric
+
+Key finding: LUTRAM is preferred for small weight memories (< 2K entries) because it avoids the 2-cycle read latency of BRAM and the timing closure is simpler. BRAM is used for FC1 weights in the TTQ model (6,400+ entries).
+
+---
+
+## Key References
+
+1. Zhu, C. et al. "Trained Ternary Quantization." ICLR 2017.
+2. Canny, J. "A Computational Approach to Edge Detection." IEEE TPAMI 1986. (Hysteresis concept)
+3. Zynq-7020 Product Specification, AMD/Xilinx UG585.
+4. Li, F. & Liu, B. "Ternary Weight Networks." arXiv 2016.

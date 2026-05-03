@@ -103,6 +103,27 @@ module tb_cnn2d;
     initial clk = 1'b0;
     always #(CLK_PERIOD_NS / 2) clk = ~clk;
 
+    // ---- Cycle counter ----
+    integer cycle_count;
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn)
+            cycle_count <= 0;
+        else
+            cycle_count <= cycle_count + 1;
+    end
+
+    // ---- Per-layer cycle capture ----
+    integer reset_cycle;
+    integer conv1_pool1_cycle;
+    integer conv2_pool2_cycle;
+    integer fc1_cycle;
+    integer fc2_cycle;
+
+    // ---- One-shot flags (counter_donestatus toggles in S_DONE) ----
+    reg fc1_done_seen;
+    reg fc2_done_seen;
+    initial begin fc1_done_seen = 0; fc2_done_seen = 0; end
+
     // ---- Argmax vars ----
     integer detected_digit;
     integer n;
@@ -142,7 +163,7 @@ module tb_cnn2d;
     // ---- Main stimulus ----
     initial begin
         $display("\n============================================================");
-        $display("  2D CNN TESTBENCH — LOADING DATA");
+        $display("  STANDARD 2D CNN TESTBENCH - LOADING DATA");
         $display("============================================================\n");
 
         // ---- Load conv2d weights ----
@@ -180,11 +201,11 @@ module tb_cnn2d;
         $display("[INFO] Expected label: %0d\n", expected_label);
 
         // ---- Reset ----
-        $display("[INFO] Applying reset ...");
         rstn = 1'b0;
         #(CLK_PERIOD_NS * 2);
         rstn = 1'b1;
-        $display("[INFO] Reset released at %0t ns. Inference running ...\n", $time);
+        reset_cycle = cycle_count;
+        $display("[INFO] Reset released at %0t ns (cycle %0d). Inference running ...\n", $time, reset_cycle);
 
         // ---- Wait for inference ----
         #(SIM_DURATION_NS);
@@ -205,12 +226,22 @@ module tb_cnn2d;
         $display("  --- EXPECTED DIGIT: %0d ---", expected_label);
         $display("");
         if (detected_digit == expected_label)
-            $display("  *** RESULT: PASS — Prediction matches expected label! ***");
+            $display("  *** RESULT: PASS ***");
         else
             $display("  *** RESULT: FAIL — Expected %0d but got %0d ***",
                      expected_label, detected_digit);
         $display("");
-        $display("############################################################\n");
+
+        // ---- Cycle breakdown ----
+        $display("============================================================");
+        $display("  CYCLE BREAKDOWN");
+        $display("============================================================");
+        $display("  Conv1+Pool1   done at cycle: %0d", conv1_pool1_cycle);
+        $display("  Conv2+Pool2   done at cycle: %0d", conv2_pool2_cycle);
+        $display("  FC1           done at cycle: %0d", fc1_cycle);
+        $display("  FC2           done at cycle: %0d", fc2_cycle);
+        $display("  TOTAL inference cycles: %0d", fc2_cycle - reset_cycle);
+        $display("============================================================\n");
 
         #(CLK_PERIOD_NS * 2);
         $finish;
@@ -218,13 +249,26 @@ module tb_cnn2d;
 
     // ---- Monitor layer done signals ----
     always @(posedge dut.pool1_done) begin
-        $display("[INFO] Conv1+Pool1 DONE at %0t ns. Conv2 starting ...", $time);
+        conv1_pool1_cycle = cycle_count;
+        $display("[INFO] Conv1+Pool1 DONE at %0t ns (cycle %0d).", $time, conv1_pool1_cycle);
     end
     always @(posedge dut.pool2_done) begin
-        $display("[INFO] Conv2+Pool2 DONE at %0t ns. FC1 starting ...", $time);
+        conv2_pool2_cycle = cycle_count;
+        $display("[INFO] Conv2+Pool2 DONE at %0t ns (cycle %0d).", $time, conv2_pool2_cycle);
     end
     always @(posedge dut.fc1_done) begin
-        $display("[INFO] FC1    DONE at %0t ns. FC2 starting ...", $time);
+        if (!fc1_done_seen) begin
+            fc1_done_seen = 1;
+            fc1_cycle = cycle_count;
+            $display("[INFO] FC1 DONE at %0t ns (cycle %0d).", $time, fc1_cycle);
+        end
+    end
+    always @(posedge dut.u_fc2.counter_donestatus) begin
+        if (!fc2_done_seen) begin
+            fc2_done_seen = 1;
+            fc2_cycle = cycle_count;
+            $display("[INFO] FC2 DONE at %0t ns (cycle %0d).", $time, fc2_cycle);
+        end
     end
 
 endmodule

@@ -1,12 +1,11 @@
 `timescale 1ns / 1ps
 //============================================================================
-// Testbench - TTQ + BN + Activation Pruning 2D CNN
+// Testbench - TTQ + BN + Inline Activation Pruning 2D CNN
 //
 // Based on tb_cnn2d_ttq.sv with:
-//   - Hysteresis threshold loading (mask1/mask2 T_H, T_L)
 //   - Per-filter/neuron activation threshold loading
-//   - Cycle counters for mask gen and each layer
-//   - Monitor for mask_done signals
+//   - Cycle counters for each layer stage
+//   - No mask generators (inline threshold pruning only)
 //============================================================================
 module tb_cnn2d_pruned;
 
@@ -74,11 +73,7 @@ module tb_cnn2d_pruned;
     reg signed [31:0] bn3_scale [0 : FC1_OUT - 1];
     reg signed [31:0] bn3_shift [0 : FC1_OUT - 1];
 
-    // === PRUNING PARAMETERS ===
-    reg signed [31:0] mask1_th_arr [0:0];
-    reg signed [31:0] mask1_tl_arr [0:0];
-    reg signed [31:0] mask2_th_arr [0:0];
-    reg signed [31:0] mask2_tl_arr [0:0];
+    // === PRUNING PARAMETERS (thresholds only) ===
     reg signed [31:0] conv2_act_thresh [0 : CONV2_OUT_CH - 1];
     reg signed [31:0] fc1_act_thresh   [0 : FC1_OUT - 1];
 
@@ -101,8 +96,7 @@ module tb_cnn2d_pruned;
         .PAD          (PAD),
         .BITS         (BITS),
         .FC1_WEIGHT_FILE("fc1_ternary_codes.mem"),
-        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem"),
-        .ENABLE_MASK_GEN(1)           // Enable mask gen for simulation
+        .FC2_WEIGHT_FILE("fc2_ternary_codes.mem")
     ) dut (
         .clk       (clk),
         .rstn      (rstn),
@@ -127,11 +121,7 @@ module tb_cnn2d_pruned;
         .bn3_shift (bn3_shift),
         .fc1_b     (fc1_b),
         .fc2_b     (fc2_b),
-        // Pruning parameters
-        .mask1_thresh_high  (mask1_th_arr[0]),
-        .mask1_thresh_low   (mask1_tl_arr[0]),
-        .mask2_thresh_high  (mask2_th_arr[0]),
-        .mask2_thresh_low   (mask2_tl_arr[0]),
+        // Pruning thresholds (no mask thresholds)
         .conv2_act_threshold(conv2_act_thresh),
         .fc1_act_threshold  (fc1_act_thresh),
         .cnn_out   (cnn_out)
@@ -144,10 +134,8 @@ module tb_cnn2d_pruned;
     // ---- Cycle counters ----
     integer cycle_count;
     integer conv1_start_cyc, conv1_end_cyc;
-    integer mask1_start_cyc, mask1_end_cyc;
-    integer conv2_start_cyc, conv2_end_cyc;
-    integer mask2_start_cyc, mask2_end_cyc;
-    integer fc1_start_cyc, fc1_end_cyc;
+    integer conv2_end_cyc;
+    integer fc1_end_cyc;
     integer fc2_end_cyc;
 
     always @(posedge clk) cycle_count <= cycle_count + 1;
@@ -188,9 +176,10 @@ module tb_cnn2d_pruned;
         cycle_count = 0;
         $display("\n============================================================");
         $display("  PRUNED TTQ+BN 2D CNN TESTBENCH - LOADING DATA");
+        $display("  (Inline threshold pruning — no mask generators)");
         $display("============================================================\n");
 
-        // Load all standard weights (same as original)
+        // Load all standard weights
         $display("[INFO] Loading Conv1 ternary codes ...");
         $readmemh("conv1_ternary_codes.mem", conv1_w);
         $readmemh("conv1_b.mem", conv1_b);
@@ -219,12 +208,8 @@ module tb_cnn2d_pruned;
         $readmemh("fc2_wp.mem", fc2_wp);
         $readmemh("fc2_wn.mem", fc2_wn);
 
-        // === Load pruning parameters ===
-        $display("[INFO] Loading pruning thresholds ...");
-        $readmemh("mask1_thresh_high.mem", mask1_th_arr);
-        $readmemh("mask1_thresh_low.mem",  mask1_tl_arr);
-        $readmemh("mask2_thresh_high.mem", mask2_th_arr);
-        $readmemh("mask2_thresh_low.mem",  mask2_tl_arr);
+        // Load pruning thresholds (no mask thresholds needed)
+        $display("[INFO] Loading activation pruning thresholds ...");
         $readmemh("conv2_act_threshold.mem", conv2_act_thresh);
         $readmemh("fc1_act_threshold.mem",   fc1_act_thresh);
 
@@ -277,12 +262,10 @@ module tb_cnn2d_pruned;
                      expected_label, detected_digit);
 
         $display("\n============================================================");
-        $display("  CYCLE BREAKDOWN");
+        $display("  CYCLE BREAKDOWN (no mask gen stages)");
         $display("============================================================");
         $display("  Conv1+Pool1   done at cycle: %0d", conv1_end_cyc);
-        $display("  Mask Gen 1    done at cycle: %0d", mask1_end_cyc);
         $display("  Conv2+Pool2   done at cycle: %0d", conv2_end_cyc);
-        $display("  Mask Gen 2    done at cycle: %0d", mask2_end_cyc);
         $display("  FC1           done at cycle: %0d", fc1_end_cyc);
         $display("  FC2           done at cycle: %0d", fc2_end_cyc);
         $display("  TOTAL inference cycles: %0d", fc2_end_cyc - conv1_start_cyc);
@@ -292,22 +275,14 @@ module tb_cnn2d_pruned;
         $finish;
     end
 
-    // ---- Monitor layer done signals ----
+    // ---- Monitor layer done signals (no mask gen monitors) ----
     always @(posedge dut.pool1_done) begin
         conv1_end_cyc = cycle_count;
         $display("[INFO] Conv1+Pool1 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end
-    always @(posedge dut.gen_mask_enabled.u_mask_gen_1.done) begin
-        mask1_end_cyc = cycle_count;
-        $display("[INFO] Mask Gen 1 DONE at %0t ns (cycle %0d).", $time, cycle_count);
-    end
     always @(posedge dut.pool2_done) begin
         conv2_end_cyc = cycle_count;
         $display("[INFO] Conv2+Pool2 DONE at %0t ns (cycle %0d).", $time, cycle_count);
-    end
-    always @(posedge dut.gen_mask_enabled.u_mask_gen_2.done) begin
-        mask2_end_cyc = cycle_count;
-        $display("[INFO] Mask Gen 2 DONE at %0t ns (cycle %0d).", $time, cycle_count);
     end
     always @(posedge dut.fc1_done) begin
         fc1_end_cyc = cycle_count;

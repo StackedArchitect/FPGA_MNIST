@@ -121,6 +121,70 @@ All numbers below are **actual measured results** on the full 10,000-image MNIST
 
 ---
 
+## Stage 1 — MLP (784→10→10)
+
+### Architecture
+
+```
+Input [784 × Q16.16]
+    │  w1[784×10] + b1[10]
+    ▼
+ Layer 1  [10 neurons]  → ReLU → [10 values]
+    │  w2[10×10] + b2[10]
+    ▼
+ Layer 2  [10 logits]  → argmax → Predicted Digit
+```
+
+**Total parameters:** 7,950 &nbsp;|&nbsp; **DSPs used:** 20 &nbsp;|&nbsp; **Test accuracy:** 89.08%
+
+Each neuron performs a sequential MAC stepped by a shared counter. One 32-bit × 32-bit Q16.16 multiply produces a 64-bit product, right-shifted by 16 to re-normalise. Counter fires `done` to chain Layer 1 → Layer 2.
+
+**RTL modules:** `input_layer.sv` → `neuron_inputlayer.sv` → `multiplier.sv` → `adder.sv` → `ReLu.sv` → `hidden_layer.sv` → `neuron_hiddenlayer.sv`
+
+> The larger 784→256→128→64→10 MLP (Stage 1b) exists in `neural_network_param.sv` for simulation only — it requires 458 DSPs, more than double the 220 available.
+
+> **No Vivado implementation screenshots available for Stage 1** — the synthesisable MLP (784→10→10) was an early verification step before dedicated image capture was set up.
+
+---
+
+## Stage 2 — 1D CNN
+
+### Architecture
+
+```
+Input [784 × 1ch × Q16.16]
+    │  Conv1d  kernel=5, 4 filters  → 780 × 4
+    ▼  MaxPool1d (pool=4)           → 195 × 4
+    │  Conv1d  kernel=5, 8 filters  → 191 × 8
+    ▼  MaxPool1d (pool=4)           → 47 × 8
+    ▼  Flatten                      → 376
+    ▼  FC (376→32)  + ReLU
+    ▼  FC (32→10)
+    ▼  argmax → predicted digit
+```
+
+**Total parameters:** 12,778 &nbsp;|&nbsp; **DSPs used:** 54 &nbsp;|&nbsp; **Test accuracy:** ~94%
+
+The image is flattened to a 784-length 1D signal and treated as a 1D time series. 1D convolution applies weight sharing across the spatial axis, cutting the weight count 19× vs. the large MLP.
+
+**RTL modules:** `conv_pool_1d.sv` → `layer_seq.sv` → `cnn_top.sv` → `tb_cnn.sv`
+
+### Vivado Implementation Results
+
+| Resource | Used | Available | Utilisation |
+|---|:---:|:---:|:---:|
+| LUTs | — | 53,200 | — |
+| DSPs | 54 | 220 | 24.5% |
+
+**Timing:** Verified at 48.8 MHz (20.49 ns period)
+
+| | |
+|---|---|
+| ![1D CNN Utilization — LUT and DSP resource breakdown after place-and-route](images/1dcnn/utilization.jpeg) | ![1D CNN Timing — setup slack report confirming WNS > 0](images/1dcnn/timing.jpeg) |
+| ![1D CNN Power — dynamic and static power estimates from Vivado](images/1dcnn/power.jpeg) | ![1D CNN Simulation — XSim waveform showing correct digit detection](images/1dcnn/simulation.jpeg) |
+
+---
+
 ## Stage 3 — Baseline 2D CNN
 
 ### Architecture
@@ -181,8 +245,8 @@ Each module waits in IDLE until its `rstn` goes high, then processes and asserts
 
 | | |
 |---|---|
-| ![Utilization](images/2dcnn/utilization.jpeg) | ![Timing](images/2dcnn/timing.jpeg) |
-| ![Power](images/2dcnn/power.jpeg) | ![Simulation](images/2dcnn/simulation.jpeg) |
+| ![2D CNN Utilization — LUT, FF, DSP and BRAM counts after full implementation](images/2dcnn/utilization.jpeg) | ![2D CNN Timing — setup timing report showing WNS = +0.41 ns at 48.8 MHz](images/2dcnn/timing.jpeg) |
+| ![2D CNN Power — Vivado power analysis showing total on-chip power](images/2dcnn/power.jpeg) | ![2D CNN Simulation — XSim waveform confirming correct digit 7 detection end-to-end](images/2dcnn/simulation.jpeg) |
 
 ---
 
@@ -245,7 +309,17 @@ Scale and shift are pre-computed offline and stored in `.mem` files — no runti
 
 | | |
 |---|---|
-| ![TTQ Utilization](cnn_2d_new/images_ttq/utilization1.jpeg) | ![TTQ Timing](cnn_2d_new/images_ttq/timing1.jpeg) |
+| ![TTQ+BN Utilization — DSP count drops from 54 to 8 vs full-precision baseline](cnn_2d_new/images_ttq/utilization1.jpeg) | ![TTQ+BN Timing — WNS = +0.97 ns at 48.8 MHz after ternary MAC optimisation](cnn_2d_new/images_ttq/timing1.jpeg) |
+| ![TTQ+BN Power — dynamic power reduction from fewer DSP toggles vs baseline](cnn_2d_new/images_ttq/power1.jpeg) | |
+
+### TWN+BN Comparison
+
+The **Ternary Weight Network (TWN)** variant uses symmetric ternary weights (`{+Δ, 0, −Δ}`, one shared threshold Δ per layer) instead of TTQ's learned asymmetric `Wp/Wn`. This is simpler to train but gives lower accuracy (95.85% vs 97.28%).
+
+| | |
+|---|---|
+| ![TWN+BN Utilization — similar DSP count to TTQ but lower weight expressiveness](cnn_2d_new/images_twn/utilization.jpeg) | ![TWN+BN Timing — timing closure at same 48.8 MHz target](cnn_2d_new/images_twn/timing.jpeg) |
+| ![TWN+BN Power — power profile with symmetric ternary weights](cnn_2d_new/images_twn/power.jpeg) | |
 
 ---
 
@@ -486,6 +560,22 @@ This is the core motivation for convolutional architectures: **weight sharing** 
 - **Distributed RAM (LUTRAM):** Asynchronous read, 1-cycle latency, uses LUT fabric
 
 Key finding: LUTRAM is preferred for small weight memories (< 2K entries) because it avoids the 2-cycle read latency of BRAM and the timing closure is simpler. BRAM is used for FC1 weights in the TTQ model (6,400+ entries).
+
+**BRAM Implementation:**
+
+| | |
+|---|---|
+| ![BRAM Schematic — synchronous read port showing 2-cycle latency path](bram_vs_lutram/images/bram/schematic.jpeg) | ![BRAM Utilization — BRAM36 primitives used for weight storage](bram_vs_lutram/images/bram/utilization.jpeg) |
+| ![BRAM Timing — setup slack with synchronous read adding pipeline delay](bram_vs_lutram/images/bram/timing.jpeg) | ![BRAM Waveform — 2-cycle read latency visible in XSim output](bram_vs_lutram/images/bram/waveform.jpeg) |
+| ![BRAM Power — static BRAM power contribution](bram_vs_lutram/images/bram/power.jpeg) | |
+
+**LUTRAM Implementation:**
+
+| | |
+|---|---|
+| ![LUTRAM Schematic — distributed RAM using LUT6 primitives with async read](bram_vs_lutram/images/lutram/schematic.jpeg) | ![LUTRAM Utilization — LUT usage increase vs BRAM baseline](bram_vs_lutram/images/lutram/utilization.jpeg) |
+| ![LUTRAM Timing — improved slack from single-cycle combinational read](bram_vs_lutram/images/lutram/timing.jpeg) | ![LUTRAM Waveform — 1-cycle read latency confirming async access](bram_vs_lutram/images/lutram/waveform.jpeg) |
+| ![LUTRAM Power — dynamic power from LUT fabric toggling](bram_vs_lutram/images/lutram/power.jpeg) | |
 
 ---
 

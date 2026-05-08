@@ -45,9 +45,9 @@ module tb_cnn2d;
     parameter BITS         = 31;
     localparam OUTPUT_BITS = BITS + 8 + 8;  // Two FC layers add 8 bits each
 
-    // Timing — sequential-filter conv ~75K + sequential FC ~8.5K = ~83K cycles
+    // Timing — parallel-filter conv ~20K + sequential FC ~8.6K = ~29K cycles
     parameter CLK_PERIOD_NS   = 10;
-    parameter SIM_DURATION_NS = 1200000;  // 1.2 ms — generous for ~83K cycle design
+    parameter SIM_DURATION_NS = 500000;   // 0.5 ms — generous for ~29K cycle design
 
     // ---- DUT signals ----
     reg  clk;

@@ -6,7 +6,7 @@
 
 ## Overview
 
-This project implements a complete **FPGA inference pipeline** for MNIST handwritten digit classification. The system evolves through four progressively refined architectures — from a simple MLP baseline to a ternary-quantised, activation-pruned 2D CNN — all verified end-to-end in Vivado XSim and synthesised on a physical Zynq-7020.
+This project implements a complete **FPGA inference pipeline** for MNIST handwritten digit classification. The system evolves through five progressively refined hardware implementations — from a full-precision 2D CNN baseline to a ternary-quantised, activation-pruned model — all verified end-to-end in Vivado XSim and synthesised on a physical Zynq-7020.
 
 The design philosophy: every architectural decision is driven by the hard resource constraints of the target chip (220 DSPs, 53,200 LUTs, 106,400 FFs, 140 BRAMs).
 
@@ -17,181 +17,170 @@ The design philosophy: every architectural decision is driven by the hard resour
 ```
 FPGA_NN-main/
 │
-├── README.md                     ← This file
+├── README.md
 ├── LICENSE
 │
-├── verilog_files/                ← Stage 1–3 shared RTL (MLP, 1D CNN, 2D CNN)
-│   ├── conv2d.sv / maxpool2d.sv / conv_pool_2d.sv
-│   ├── layer.sv / layer_seq.sv / counter.sv
-│   ├── cnn2d_top.sv / cnn2d_synth_top.sv
-│   └── tb_cnn2d.sv / tb_conv2d_box.sv
+├── cnn2d_baseline/                   ← Baseline 2D CNN (full-precision, two variants)
+│   ├── hardware_sequential/          ← Sequential-filter: 1 DSP, 83K cycles
+│   │   ├── conv_pool_2d.sv           ←   Conv+Pool FSM (serial filter loop)
+│   │   ├── layer_seq.sv              ←   FC layer (BRAM weight ROM)
+│   │   ├── cnn2d_top.sv
+│   │   ├── cnn2d_synth_top.sv
+│   │   └── tb_cnn2d.sv
+│   └── hardware_parallel/            ← Parallel-filter: 67 DSPs, 28K cycles
+│       ├── conv_pool_2d.sv           ←   Conv+Pool FSM (OUT_CH parallel DSPs)
+│       ├── layer_seq.sv
+│       ├── cnn2d_top.sv
+│       ├── cnn2d_synth_top.sv
+│       └── tb_cnn2d.sv
 │
-├── python_files/                 ← Stage 1–3 training & weight export scripts
-│   ├── cnn2d_model.py            ← Baseline 2D CNN (98.35%)
-│   ├── cnn2d_test_image.py       ← Export test image to data_in.mem
-│   └── box_filter_test.py        ← Convolution unit test
+├── verilog_files/                    ← Active working files (currently sequential)
 │
-├── cnn_2d_new/                   ← Stage 4a: TTQ+BN quantised model
-│   ├── README.md
-│   ├── software/                 ← PyTorch training (TTQ, TWN variants)
-│   │   ├── cnn2d_ttq_bn_model.py
-│   │   ├── cnn2d_ttq_bn_test.py
-│   │   └── cnn2d_ttq_bn_mnist_model.pth ← Saved model (97.28%)
-│   ├── hardware_ttq/             ← TTQ+BN RTL (synthesised, timing-clean)
-│   │   ├── conv_pool_2d_ttq.sv / layer_seq_ttq.sv
-│   │   ├── cnn2d_top_ttq.sv / cnn2d_synth_top_ttq.sv
-│   │   └── tb_cnn2d_ttq.sv
-│   ├── weights/                  ← TTQ weight .mem files (ternary codes + Wp/Wn)
-│   └── images_ttq/               ← Vivado synthesis screenshots
+├── cnn_2d_new/                       ← TTQ+BN quantised model
+│   ├── hardware_ttq/                 ←   TTQ+BN RTL (synthesised, timing-clean)
+│   └── weights/                      ←   Ternary codes + Wp/Wn .mem files
 │
-├── cnn_act_prune/                ← Stage 4b: Activation pruning (DAAP + Hysteresis)
-│   ├── README.md
-│   ├── activation_pruning_analysis.tex ← Full theoretical analysis
-│   ├── software/
-│   │   ├── cnn2d_ttq_analysis.py       ← DAAP sweep + weight export
-│   │   ├── export_pruned_thresholds.py ← Threshold .mem file generator
-│   │   └── test_combined_pruning.py    ← Measured accuracy for all 4 methods
-│   ├── hardware/                       ← Threshold-pruned RTL (synthesised)
-│   │   ├── act_mask_gen.sv             ← Hysteresis mask generator (NEW)
-│   │   ├── conv_pool_2d_pruned.sv      ← Conv+Pool with 2-tap skip
-│   │   ├── layer_seq_pruned.sv         ← FC with 4-tap skip
-│   │   ├── cnn2d_top_pruned.sv         ← Top-level with mask handshake
-│   │   ├── cnn2d_synth_top_pruned.sv
-│   │   ├── cnn2d_pruned_timing.xdc
-│   │   └── tb_cnn2d_pruned.sv
-│   ├── hardware_with_hysteresis/       ← Combined (hysteresis+threshold) RTL
-│   ├── weights/                        ← Threshold + mask .mem files
-│   └── analysis_plots/                 ← Activation histograms, DAAP tradeoff plots
+├── cnn_act_prune/                    ← Activation pruning
+│   ├── hardware/                     ←   TTQ+BN + Threshold pruning RTL
+│   └── hardware_with_hysteresis/     ←   TTQ+BN + Hysteresis + Threshold RTL
 │
-├── images/                       ← Vivado implementation screenshots
-│   ├── 1dcnn/  (power, timing, utilization, simulation)
-│   └── 2dcnn/  (power, timing, utilization, simulation)
-│
-├── bram_vs_lutram/               ← BRAM vs LUTRAM comparison study
-├── box_filter_test/              ← Conv2D unit test weights
-├── constraints/                  ← Timing constraint .xdc files
-├── diagrams/                     ← Adder/multiplier/neuron PDFs
-├── docs/                         ← Extended documentation
-│   ├── CNN2D_PROJECT_DOCUMENTATION.md
-│   ├── CNN_PROJECT_DOCUMENTATION.md
-│   ├── FPGA_RESOURCE_LIMITS.md
-│   └── SYNTHESIS_CHANGES.md
-├── mlp_weights/                  ← MLP weight .mem files
-├── cnn_weights/                  ← 1D CNN weight .mem files
-├── cnn2d_weights/                ← Baseline 2D CNN weight .mem files
-└── data/                         ← MNIST dataset cache
+├── python_files/                     ← Baseline training & weight export
+├── cnn2d_weights/                    ← Baseline weight .mem files
+├── constraints/                      ← Timing .xdc files
+├── images/                           ← Vivado screenshots (1D CNN, 2D CNN)
+└── bram_vs_lutram/                   ← BRAM vs LUTRAM comparison study
 ```
 
 ---
 
 ## Architecture Evolution
 
-| Stage | Architecture | Weights | DSPs | Test Accuracy | HW Verified |
-|:---:|---|:---:|:---:|:---:|:---:|
-| 1 | MLP (784→10→10) | 7,950 | 20 | 89.08% | ✅ |
-| 1b | MLP (784→256→128→64→10) | 242,304 | **458** ❌ | ~96.8% | Sim only |
-| 2 | 1D CNN (k=5, 4→8ch) + FC | 12,778 | 54 | ~94% | ✅ |
-| **3** | **2D CNN (k=3×3, 4→8ch) + FC** | **1,728** | **54** | **98.35%** | ✅ |
-| **4a** | **TTQ+BN 2D CNN** | **ternary** | **8** | **97.28%** | ✅ |
-| **4b-T** | **TTQ+BN + Threshold Pruning** | **ternary** | **8** | **97.25%** | ✅ |
-| **4b-H** | **TTQ+BN + Hysteresis + Threshold** | **ternary** | **8** | **96.96%** | ✅ Sim |
-
-> Stage 1b uses 458 DSPs — more than double the Zynq-7020's hard limit of 220. It cannot be synthesised on this chip. This motivates the move to convolutional architectures.
+| Stage | Model | Folder | DSPs | Accuracy | HW Verified |
+|:---:|---|---|:---:|:---:|:---:|
+| 1 | MLP (784→10→10) | `verilog_files/` | 20 | 89.08% | ✅ |
+| 2 | 1D CNN (k=5, 4→8ch) + FC | `verilog_files/` | 54 | ~94% | ✅ |
+| **3a** | **2D CNN Baseline (sequential)** | **`cnn2d_baseline/hardware_sequential/`** | **23** | **98.35%** | ✅ |
+| **3b** | **2D CNN Baseline (parallel)** | **`cnn2d_baseline/hardware_parallel/`** | **67** | **98.35%** | ✅ |
+| **4a** | **TTQ+BN** | **`cnn_2d_new/hardware_ttq/`** | **51** | **97.28%** | ✅ |
+| **4b-T** | **TTQ+BN + Threshold** | **`cnn_act_prune/hardware/`** | **54** | **97.25%** | ✅ |
+| **4b-H** | **TTQ+BN + Hysteresis** | **`cnn_act_prune/hardware_with_hysteresis/`** | **54** | **96.96%** | ✅ |
 
 ---
 
-## Software Accuracy Summary
+## Design Style — Common Architecture
 
-All numbers below are **actual measured results** on the full 10,000-image MNIST test set.
+All five hardware models share the same structural foundation, ensuring the comparison isolates the effect of quantisation and pruning rather than architectural differences.
 
-| Model | Accuracy | Δ vs Baseline | Δ vs TTQ | Source |
-|---|:---:|:---:|:---:|---|
-| 2D CNN — BN only (not HW) | 98.87% | — | — | Software only |
-| **2D CNN Baseline (full precision)** | **98.35%** | — | — | Measured ✅ |
-| TWN+BN (symmetric ternary) | 95.85% | −2.50% | — | Measured ✅ |
-| **TTQ+BN** | **97.28%** | −1.07% | — | Measured ✅ |
-| TTQ+BN + Threshold τ=0.15 | 97.35% | −1.00% | **+0.07%** | Measured ✅ |
-| TTQ+BN + Threshold τ=0.20 | 97.30% | −1.05% | +0.02% | Measured ✅ |
-| **TTQ+BN + Threshold τ=0.30** | **97.25%** | −1.10% | −0.03% | Measured ✅ |
-| TTQ+BN + Hysteresis only | 96.93% | −1.42% | −0.35% | Measured ✅ |
-| **TTQ+BN + Hysteresis + Threshold** | **96.96%** | −1.39% | −0.32% | **Measured ✅ NEW** |
-| TTQ+BN + Threshold τ=0.50 | 96.70% | −1.65% | −0.58% | Measured ✅ |
+| Design Aspect | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|---|---|---|---|---|
+| **Pipeline style** | 1-stage | 1-stage | 1-stage | 1-stage | 1-stage |
+| **Conv filter proc.** | Sequential | Parallel | Sequential | Sequential | Sequential |
+| **Per-tap operation** | 32×32 multiply | 32×32 multiply | Ternary add/sub | Ternary add/sub | Ternary add/sub |
+| **Post-tap stages** | Store | Store (×OUT_CH) | Scale+BN+Store | Scale+BN+Store | Scale+BN+Store |
+| **FC processing** | Serial, BRAM ROM | Serial, BRAM ROM | Serial, BRAM ROM | Serial, BRAM ROM | Serial, BRAM ROM |
+| **Weight format** | 32-bit Q16.16 | 32-bit Q16.16 | 2-bit ternary | 2-bit ternary | 2-bit ternary |
+| **Fixed-point** | Q16.16 | Q16.16 | Q16.16 | Q16.16 | Q16.16 |
+| **Target** | Zynq-7020 | Zynq-7020 | Zynq-7020 | Zynq-7020 | Zynq-7020 |
+| **Clock** | 100 MHz | 100 MHz | 100 MHz | 100 MHz | 100 MHz |
 
-> Models 4b-T and 4b-H do **not retrain** the network. They use the same saved TTQ+BN weights (97.28%) and apply activation zeroing only at inference time. See `cnn_act_prune/software/test_combined_pruning.py`.
-
----
-
-## Stage 1 — MLP (784→10→10)
-
-### Architecture
-
-```
-Input [784 × Q16.16]
-    │  w1[784×10] + b1[10]
-    ▼
- Layer 1  [10 neurons]  → ReLU → [10 values]
-    │  w2[10×10] + b2[10]
-    ▼
- Layer 2  [10 logits]  → argmax → Predicted Digit
-```
-
-**Total parameters:** 7,950 &nbsp;|&nbsp; **DSPs used:** 20 &nbsp;|&nbsp; **Test accuracy:** 89.08%
-
-Each neuron performs a sequential MAC stepped by a shared counter. One 32-bit × 32-bit Q16.16 multiply produces a 64-bit product, right-shifted by 16 to re-normalise. Counter fires `done` to chain Layer 1 → Layer 2.
-
-**RTL modules:** `input_layer.sv` → `neuron_inputlayer.sv` → `multiplier.sv` → `adder.sv` → `ReLu.sv` → `hidden_layer.sv` → `neuron_hiddenlayer.sv`
-
-> The larger 784→256→128→64→10 MLP (Stage 1b) exists in `neural_network_param.sv` for simulation only — it requires 458 DSPs, more than double the 220 available.
-
-> **No Vivado implementation screenshots available for Stage 1** — the synthesisable MLP (784→10→10) was an early verification step before dedicated image capture was set up.
+**Key distinction:** The sequential baseline time-shares a single 32×32 multiplier across all filters and taps. The parallel baseline instantiates OUT_CH dedicated multipliers (4 for Conv1, 8 for Conv2) processing all filters simultaneously. TTQ replaces per-tap multiplies with ternary add/subtract (zero DSPs per tap) and adds dedicated Wp/Wn scaling and BN multiply stages once per output position.
 
 ---
 
-## Stage 2 — 1D CNN
+## Hardware Comparison Table
 
-### Architecture
+> Target: Zynq-7020 @ 100 MHz &nbsp;|&nbsp; 🟢 = best in row &nbsp;|&nbsp; 🟡 = timing caution
 
-```
-Input [784 × 1ch × Q16.16]
-    │  Conv1d  kernel=5, 4 filters  → 780 × 4
-    ▼  MaxPool1d (pool=4)           → 195 × 4
-    │  Conv1d  kernel=5, 8 filters  → 191 × 8
-    ▼  MaxPool1d (pool=4)           → 47 × 8
-    ▼  Flatten                      → 376
-    ▼  FC (376→32)  + ReLU
-    ▼  FC (32→10)
-    ▼  argmax → predicted digit
-```
+### Software Accuracy
 
-**Total parameters:** 12,778 &nbsp;|&nbsp; **DSPs used:** 54 &nbsp;|&nbsp; **Test accuracy:** ~94%
+| Metric | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Accuracy (%)** | **98.35** 🟢 | **98.35** 🟢 | 97.28 | 97.25 | 96.96 |
+| Δ from baseline | — | — | −1.07% | −1.10% | −1.39% |
+| Δ from TTQ+BN | — | — | — | −0.03% | −0.32% |
 
-The image is flattened to a 784-length 1D signal and treated as a 1D time series. 1D convolution applies weight sharing across the spatial axis, cutting the weight count 19× vs. the large MLP.
+### Simulation — Latency & Throughput
 
-**RTL modules:** `conv_pool_1d.sv` → `layer_seq.sv` → `cnn_top.sv` → `tb_cnn.sv`
+| Metric | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Total cycles** | 83,198 | 28,704 | 90,534 | 88,706 | 81,505 |
+| **Latency @100MHz (ms)** | 0.832 | **0.287** 🟢 | 0.905 | 0.887 | 0.815 |
+| **Throughput (inf/s)** | 1,202 | **3,484** 🟢 | 1,104 | 1,128 | 1,227 |
+| Top logit (confidence) | 578,677 | 578,677 | 576,881 | 634,415 | 631,128 |
+| Result | PASS | PASS | PASS | PASS | PASS |
 
-### Vivado Implementation Results
+### Synthesis — Timing
 
-| Resource | Used | Available | Utilisation |
-|---|:---:|:---:|:---:|
-| LUTs | — | 53,200 | — |
-| DSPs | 54 | 220 | 24.5% |
+| Metric | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Setup WNS (ns)** | 0.291 | 0.291 | **0.853** 🟢 | 0.039 🟡 | 0.289 |
+| Hold WHS (ns) | 0.116 | **0.137** 🟢 | 0.043 | 0.116 | 0.116 |
+| WPWS (ns) | 9.000 | 9.000 | 9.000 | 9.500 | **9.750** 🟢 |
+| Failing endpoints | 0 | 0 | 0 | 0 | 0 |
 
-**Timing:** Verified at 48.8 MHz (20.49 ns period)
+### Synthesis — Power
 
-| | |
-|---|---|
-| ![1D CNN Utilization — LUT and DSP resource breakdown after place-and-route](images/1dcnn/utilization.jpeg) | ![1D CNN Timing — setup slack report confirming WNS > 0](images/1dcnn/timing.jpeg) |
-| ![1D CNN Power — dynamic and static power estimates from Vivado](images/1dcnn/power.jpeg) | ![1D CNN Simulation — XSim waveform showing correct digit detection](images/1dcnn/simulation.jpeg) |
+| Metric | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Total power (W)** | 0.161 | 0.191 | **0.153** 🟢 | 0.171 | 0.200 |
+| Dynamic power (W) | 0.056 | 0.085 | **0.048** 🟢 | 0.065 | 0.094 |
+| Dynamic fraction | 35% | 44% | **31%** 🟢 | 38% | 47% |
+| Energy / inf (mJ) | 0.134 | **0.055** 🟢 | 0.138 | 0.152 | 0.163 |
+| Junction temp (°C) | 26.9 | 27.2 | **26.8** 🟢 | 27.0 | 27.3 |
+
+### Synthesis — Resource Utilisation
+
+| Resource | Baseline (Seq.) | Baseline (Par.) | TTQ+BN | TTQ+Threshold | TTQ+Hysteresis |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **LUT / 53,200** | 14,925 (28.1%) | 19,980 (37.6%) | **14,588 (27.4%)** 🟢 | 23,085 (43.4%) | 33,565 (63.1%) |
+| **FF / 106,400** | 31,571 (29.7%) | 32,162 (30.2%) | **31,523 (29.6%)** 🟢 | 31,591 (29.7%) | 32,734 (30.8%) |
+| **BRAM / 140** | 9 (6.4%) | 9 (6.4%) | **1 (0.7%)** 🟢 | **1 (0.7%)** 🟢 | **1 (0.7%)** 🟢 |
+| **DSP / 220** | **23 (10.5%)** 🟢 | 67 (30.5%) | 51 (23.2%) | 54 (24.6%) | 54 (24.6%) |
 
 ---
 
-## Stage 3 — Baseline 2D CNN
+## Metric-by-Metric Justification
+
+### Accuracy
+The baseline achieves 98.35% using full 32-bit weights with no quantisation error. TTQ+BN loses 1.07% by collapsing every weight to `{+Wp, 0, −Wn}`. Learnable Wp/Wn scalars and folded BN partially recover accuracy, making TTQ the most efficient accuracy–compression trade-off. Threshold pruning adds only −0.03% because it targets post-ReLU layers where small activations act as noise. Hysteresis pruning costs −0.32% more because the spatial mask occasionally removes thin-stroke features in MNIST digits.
+
+### Latency & Throughput
+The sequential baseline (83K cycles) processes one filter at a time: each position costs TAP_COUNT + 3 cycles. The parallel baseline (28,704 cycles) computes all OUT_CH filters simultaneously, spending TAP_COUNT + 2 + OUT_CH cycles per position — 3.2× faster. TTQ is slowest (90,534 cycles) despite ternary computation because the added S_CONV_SCALE and S_CONV_BN states add 2 extra cycles per position. Threshold pruning skips taps where `|act| < τ`, saving ~2% of TTQ's cycles; hysteresis mask pre-zeros spatial regions, saving ~10%.
+
+### DSPs
+**Sequential baseline (23 DSPs):** One shared 32×32 multiplier per module, time-shared across all taps and filters. Vivado maps this to ~4-6 DSP48E1 per module × 4 modules.
+**Parallel baseline (67 DSPs):** OUT_CH dedicated multipliers per conv module (4 for Conv1, 8 for Conv2). Each 32×32 multiply maps to ~4-5 DSP48E1 slices. This is the natural cost of full-precision parallel computation.
+**TTQ (51 DSPs):** Zero DSPs per tap (ternary = add/subtract). Pays 3 dedicated multipliers per module for Wp/Wn scaling and BN — fired once per output position, not per tap. The parallel baseline (67) vs TTQ (51) correctly shows full-precision costs more DSPs than ternary.
+**Threshold/Hysteresis (+3 DSPs):** Lookahead address arithmetic adds constant-multiply chains that Vivado maps to DSPs.
+
+### LUTs
+**Sequential (14,925):** Single weight MUX tree per module. Similar to TTQ's LUT count.
+**Parallel (19,980):** OUT_CH simultaneous weight MUX reads require OUT_CH parallel MUX trees on 32-bit arrays — significantly more LUTs. Large conv_buf decode logic (all filters) also adds overhead.
+**TTQ (14,588):** 2-bit ternary code MUXes are 16× narrower than 32-bit weight MUXes. The LUT savings from weight compression outweigh the extra BN/scaling control logic.
+**Threshold (23,085):** Per-filter threshold comparators, precomp_below registers, and 2-tap lookahead address logic add ~8,500 LUTs.
+**Hysteresis (33,565):** The `act_mask_gen` module's 2-pass spatial filter with distributed RAM, cardinal-neighbour comparators, and per-channel state tracking dominates at 63.1% LUT utilisation.
+
+### FFs
+All designs stay within a narrow 29.6–30.8% band because FFs are dominated by pipeline registers, FSM state, and counters — structurally identical across all models. Small variations reflect extra registered stages (BN params, mask state, threshold registers).
+
+### BRAM
+**Both baselines (9 BRAM):** FC1 (7,680 × 32b) and FC2 (720 × 32b) weights stored in `layer_seq`'s internal `w_rom` via `(* ram_style = "block" *)`. Parallel baseline additionally stores the all-filter conv_buf (86K+31K bits) in BRAM.
+**TTQ/pruned (1 BRAM):** FC ternary codes are 2-bit (7,680 × 2b = 15,360b) — fits in <1 BRAM36. Conv_buf is single-filter (small enough for distributed RAM). The 9× BRAM difference directly reflects 32-bit vs 2-bit weight storage cost.
+
+### Power
+Static device leakage (~0.106W) is identical across all designs, dominating total power and compressing apparent differences. Dynamic power differences are genuine: the parallel baseline's 67 DSPs toggling every cycle cost 0.085W dynamic vs. sequential's 0.056W. TTQ's fewer DSPs and ternary accumulation reduce dynamic power to 0.048W. Hysteresis has highest dynamic power (0.094W) from the mask generator's two-pass spatial filtering logic. Despite higher instantaneous power, the parallel baseline achieves the lowest energy per inference (0.055 mJ) by completing 3.2× faster.
+
+### Timing
+All designs meet 100 MHz with no failing endpoints. TTQ has the best setup margin (0.853 ns) because ternary add/subtract has a shorter combinational path than 32×32 multiply + accumulate, and S_CONV_SCALE/BN states break long paths into registered stages. Both baselines share WNS = 0.291 ns — the critical path runs through the combinational 32×32 multiply chain. Threshold pruning has the tightest margin (0.039 ns) due to the threshold comparator adding to the critical path.
+
+---
+
+## Stage 3 — 2D CNN Baseline
 
 ### Architecture
 
 ```
 Input (28×28×1)
-    │
     ▼  Conv2D (3×3, 4 filters) + ReLU       → 26×26×4
     ▼  MaxPool2D (2×2)                       → 13×13×4
     ▼  Conv2D (3×3, 8 filters) + ReLU       → 11×11×8
@@ -202,69 +191,45 @@ Input (28×28×1)
     ▼  argmax → predicted digit
 ```
 
-**Total parameters:** 7,044 weights + 54 biases = 7,098
+**Total parameters:** 7,044 weights + 54 biases = 7,098 &nbsp;|&nbsp; **Test accuracy:** 98.35%
 
-### Hardware (SystemVerilog FSM)
+### 3a — Sequential-Filter (`cnn2d_baseline/hardware_sequential/`)
 
-Each layer is implemented as a finite state machine with the following states:
+One filter processed at a time. Single 32×32 multiplier per conv module. Conv buffer stores only one filter's activations (CONV_POSITIONS × 32b).
 
-| Module | States | Key Detail |
-|---|---|---|
-| `conv_pool_2d.sv` | IDLE → CONV_COMPUTE → DRAIN → SCALE → BN → STORE → POOL → DONE | 2D position + tap counter decomposed combinationally |
-| `layer_seq.sv` | IDLE → MAC → BIAS → BN → RELU → DONE | Counter-based MAC, pipelined |
-| `cnn2d_top.sv` | — | `done` → `rstn` chaining, combinational flatten+pad |
+| Layer | Cycles | Reason |
+|---|:---:|---|
+| Conv1 + Pool1 | 35,830 | 4 filters × (676×12 + 169×5) |
+| Conv2 + Pool2 | 38,754 | 8 filters × (121×39 + 25×5) |
+| FC1 | 7,778 | 32 neurons × (239+4) |
+| FC2 | 836 | 10 neurons × (71+4) |
+| **Total** | **83,198** | |
 
-**Q16.16 arithmetic:** All weights, biases, activations are 32-bit signed fixed-point. Multiplications produce 64-bit intermediates, right-shifted by 16 to re-normalise.
+### 3b — Parallel-Filter (`cnn2d_baseline/hardware_parallel/`)
 
-**Inter-layer handshaking:**
-```
-Conv1.done → Pool1.rstn → Pool1.done → Conv2.rstn → ... → FC2.done
-```
-Each module waits in IDLE until its `rstn` goes high, then processes and asserts `done` for one cycle.
+All output filters computed simultaneously. OUT_CH dedicated 32×32 multipliers per conv module. Conv buffer stores all filters in BRAM.
 
-### Cycle Count and Timing
-
-| Layer | Cycles | Time @ 48.8 MHz |
-|---|:---:|:---:|
-| Conv1 + Pool1 | 27,716 | 0.568 ms |
-| Conv2 + Pool2 | 12,932 | 0.265 ms |
-| FC1 | 7,680 | 0.157 ms |
-| FC2 | 720 | 0.015 ms |
-| **Total** | **49,048** | **~1.005 ms** |
-
-### Vivado Implementation Results
-
-| Resource | Used | Available | Utilisation |
-|---|:---:|:---:|:---:|
-| LUTs | 3,817 | 53,200 | 7.17% |
-| FFs | 2,456 | 106,400 | 2.31% |
-| DSPs | 54 | 220 | 24.5% |
-| BRAMs | 0 | 140 | 0% |
-
-**Timing:** WNS = +0.41 ns @ 20.49 ns period (48.8 MHz)
-
-| | |
-|---|---|
-| ![2D CNN Utilization — LUT, FF, DSP and BRAM counts after full implementation](images/2dcnn/utilization.jpeg) | ![2D CNN Timing — setup timing report showing WNS = +0.41 ns at 48.8 MHz](images/2dcnn/timing.jpeg) |
-| ![2D CNN Power — Vivado power analysis showing total on-chip power](images/2dcnn/power.jpeg) | ![2D CNN Simulation — XSim waveform confirming correct digit 7 detection end-to-end](images/2dcnn/simulation.jpeg) |
+| Layer | Cycles | Reason |
+|---|:---:|---|
+| Conv1 + Pool1 | 13,520 | 676×(9+2+4) + 4×169×5 |
+| Conv2 + Pool2 | 6,566 | 121×(36+2+8) + 8×25×5 |
+| FC1 | 7,778 | Same — FC is always serial |
+| FC2 | 840 | Same |
+| **Total** | **28,704** | |
 
 ---
 
-## Stage 4a — TTQ+BN (Trained Ternary Quantisation + Batch Normalisation)
+## Stage 4a — TTQ+BN (`cnn_2d_new/hardware_ttq/`)
 
 ### Why TTQ?
 
-The baseline 2D CNN stores weights as 32-bit floats. TTQ replaces each weight with one of three values: `{+Wp, 0, −Wn}` (two learned scalars per layer). This gives:
-- **15.7× weight memory compression** (28,176 B → 1,793 B)
-- **DSP reduction from 54 → 8** (ternary multiply = shift or negate)
-- **~1% accuracy trade-off** (97.28% vs 98.35%)
+Full-precision weights cost one 32×32 DSP multiply **per tap**. TTQ replaces each weight with `{+Wp, 0, −Wn}` — a 2-bit code. Positive taps add the input; negative taps subtract; zero taps skip. No DSP needed per tap.
 
-### TTQ Weight Format
-
-Each layer stores:
-- **Ternary codes** (2-bit per weight): `00`=zero, `01`=+Wp, `10`=−Wn
-- **Wp, Wn** scalars (Q16.16, one per layer)
-- **Folded BN** parameters (scale + shift absorbed into bias)
+| Metric | Baseline | TTQ+BN | Saving |
+|---|:---:|:---:|:---:|
+| Weight bits | 32 | 2 | 16× compression |
+| DSPs (conv) | 67 (parallel) / 23 (seq.) | 51 | −24% vs parallel |
+| Accuracy | 98.35% | 97.28% | −1.07% |
 
 ### TTQ Weight Statistics
 
@@ -275,187 +240,40 @@ Each layer stores:
 | fc1 | (32,200) | 0.06843 | 0.06875 | 6.0% |
 | fc2 | (10,32) | 0.62382 | 0.60108 | 4.4% |
 
-### Hardware
-
-The FSM is identical to Stage 3 but the compute state changes:
-
-**Ternary MAC (no DSP):**
-```
-case (ternary_code)
-  2'b01:  acc += data_in * Wp   // +Wp: one DSP
-  2'b10:  acc -= data_in * Wn   // -Wn: one DSP (negate result)
-  2'b00:  skip                  // zero weight: 0 DSPs
-endcase
-```
-
-**Batch Normalisation (folded):**
-```
-BN output = (acc * bn_scale) + bn_shift
-```
-Scale and shift are pre-computed offline and stored in `.mem` files — no runtime statistics needed.
-
-### Vivado Implementation Results (TTQ+BN)
-
-| Resource | Used | Available | Utilisation |
-|---|:---:|:---:|:---:|
-| LUTs | ~4,200 | 53,200 | 7.89% |
-| FFs | ~2,800 | 106,400 | 2.63% |
-| DSPs | **8** | 220 | **3.6%** |
-| BRAMs | 4 | 140 | 2.9% |
-
-**Timing:** WNS = +0.97 ns @ 20.5 ns period (48.8 MHz)
-
-**Weight compression:** 15.7× (28,176 B → 1,793 B encoded)
+### Vivado Results
 
 | | |
 |---|---|
-| ![TTQ+BN Utilization — DSP count drops from 54 to 8 vs full-precision baseline](cnn_2d_new/images_ttq/utilization1.jpeg) | ![TTQ+BN Timing — WNS = +0.97 ns at 48.8 MHz after ternary MAC optimisation](cnn_2d_new/images_ttq/timing1.jpeg) |
-| ![TTQ+BN Power — dynamic power reduction from fewer DSP toggles vs baseline](cnn_2d_new/images_ttq/power1.jpeg) | |
-
-### TWN+BN Comparison
-
-The **Ternary Weight Network (TWN)** variant uses symmetric ternary weights (`{+Δ, 0, −Δ}`, one shared threshold Δ per layer) instead of TTQ's learned asymmetric `Wp/Wn`. This is simpler to train but gives lower accuracy (95.85% vs 97.28%).
-
-| | |
-|---|---|
-| ![TWN+BN Utilization — similar DSP count to TTQ but lower weight expressiveness](cnn_2d_new/images_twn/utilization.jpeg) | ![TWN+BN Timing — timing closure at same 48.8 MHz target](cnn_2d_new/images_twn/timing.jpeg) |
-| ![TWN+BN Power — power profile with symmetric ternary weights](cnn_2d_new/images_twn/power.jpeg) | |
+| ![TTQ+BN Utilization](cnn_2d_new/images_ttq/utilization1.jpeg) | ![TTQ+BN Timing](cnn_2d_new/images_ttq/timing1.jpeg) |
+| ![TTQ+BN Power](cnn_2d_new/images_ttq/power1.jpeg) | |
 
 ---
 
-## Stage 4b — Activation Pruning (DAAP + Spatial Hysteresis)
+## Stage 4b — Activation Pruning
 
-The TTQ+BN model generates sparse activations (24–51% zeros per layer due to ReLU). The hardware FSM still burns one clock cycle per zero-activation tap. Activation pruning exploits this sparsity to **skip unproductive taps** and advance the counter by 2–4 positions in a single cycle.
+The TTQ+BN model generates sparse post-ReLU activations (24–51% zeros). The FSM still consumes one cycle per zero-activation tap. Activation pruning exploits this sparsity to skip unproductive taps.
 
-### Method 1 — Density-Adaptive Activation Pruning (DAAP)
+### Method 1 — Threshold Pruning (`cnn_act_prune/hardware/`)
 
-Each Conv2 filter / FC1 neuron gets a threshold `τ_f = τ_base / ρ_f`, where `ρ_f` is the filter's non-zero weight density. Sparser filters require stronger activations:
+Per-filter threshold `τ_f`. If `|activation| < τ_f`, the tap is skipped. τ=0.30 applied to Conv2 and FC1 (post-ReLU layers).
 
-| Filter density | τ_base | τ_f |
-|:---:|:---:|:---:|
-| ρ = 1.00 (dense) | 0.30 | 0.30 |
-| ρ = 0.50 (sparse) | 0.30 | 0.60 |
+### Method 2 — Hysteresis Spatial Mask (`cnn_act_prune/hardware_with_hysteresis/`)
 
-If `|activation| < τ_f`, the tap is **skipped** — no accumulation, counter advances.
+2-pass spatial filter classifying activations as ACTIVE / UNCERTAIN / INACTIVE. Uncertain activations are resolved by checking 4 cardinal neighbours.
 
-**DAAP Sweep Results (measured on 10K test set):**
+### Vivado Results — Threshold Pruning
 
-| τ_base | Accuracy | Drop | MAC Reduction |
-|:---:|:---:|:---:|:---:|
-| 0.00 | 97.28% | 0.00% | 0.0% |
-| 0.10 | 97.19% | 0.09% | 11.6% |
-| 0.15 | **97.35%** | **−0.07%** | 17.8% |
-| 0.20 | 97.30% | −0.02% | 20.1% |
-| **0.30** | **97.25%** | **0.03%** | **24.5%** |
-| 0.50 | 96.70% | 0.58% | 32.7% |
+| | |
+|---|---|
+| ![Threshold Utilization](cnn_act_prune/hardware/images/utilization.png) | ![Threshold Timing](cnn_act_prune/hardware/images/timing.png) |
+| ![Threshold Power](cnn_act_prune/hardware/images/power.png) | ![Threshold Simulation](cnn_act_prune/hardware/images/simulation.png) |
 
-> At τ=0.15–0.20, accuracy **improves** — thresholding acts as a denoising regulariser.
+### Vivado Results — Hysteresis + Threshold
 
-### Method 2 — Spatial Hysteresis Mask
-
-Between Conv1→Conv2 and Conv2→FC1, a 2-pass spatial filter classifies every activation in the feature map:
-
-```
-Pass 1 — Classify (per activation |a|):
-    |a| > T_H  →  ACTIVE    (keep)
-    |a| < T_L  →  INACTIVE  (prune)
-    T_L ≤ |a| ≤ T_H  →  UNCERTAIN
-
-Pass 2 — Resolve UNCERTAIN (4-cardinal neighbours, same channel):
-    ≥ 2 active neighbours  →  mask = 1  (part of a feature)
-     < 2 active neighbours →  mask = 0  (spatially isolated noise)
-```
-
-**Why 4-neighbours (not 8)?** MNIST digit strokes are 1–2 pixels wide. A pixel on a thin vertical stroke has 2/4 active cardinal neighbours (up + down) → kept. With 8-neighbours it has only 2/8 → killed, destroying thin strokes.
-
-### Combined Method (M1 + M2)
-
-| | Method 1 (DAAP) | Method 2 (Hysteresis) | Combined |
-|---|:---:|:---:|:---:|
-| Conv2 cycle savings | 10.5% | 8.0% | **13.3%** |
-| FC1 cycle savings | 28.9% | 24.7% | **32.0%** |
-| Total cycle savings | 7.2% | 3.8% | **6.8%** |
-| Accuracy drop from TTQ | 0.03% | 0.35% | **0.32%** |
-| Extra LUTs | ~80 | ~305 | **~385** |
-| Mask overhead cycles | 0 | 1,752 | 1,752 |
-
-### Cycle Count Comparison
-
-| Layer | Baseline TTQ | Threshold Only | Combined (M1+M2) |
-|---|:---:|:---:|:---:|
-| Conv1 + Pool1 | 41,236 | 41,236 | 41,236 |
-| Mask Gen overhead | — | — | +1,752 |
-| Conv2 + Pool2 | 40,688 | 36,432 | **35,264** |
-| Mask Gen 2 overhead | — | — | +400 |
-| FC1 | 7,840 | 5,577 | **5,331** |
-| FC2 | 760 | 760 | 760 |
-| **Total** | **90,524** | **84,005** | **84,343** |
-| **vs Baseline** | — | **−7.2%** | **−6.8%** |
-
-### Hardware Changes — Module by Module
-
-#### `act_mask_gen.sv` — NEW MODULE
-
-Parameterised 2-pass hysteresis mask generator. Latency = 2 × N_POSITIONS cycles.
-
-```
-Parameters: N_POSITIONS (676 or 200), MAP_H, MAP_W, N_CHANNELS, BITS
-Ports:      clk, start, act_in[], thresh_high, thresh_low, mask_out[], done
-Latency:    Mask Gen 1: 1,352 cycles  |  Mask Gen 2: 400 cycles
-Resources:  ~120 LUTs + 60 FFs per instance (distributed RAM)
-```
-
-#### `conv_pool_2d_pruned.sv` — MODIFIED
-
-Added to `S_CONV_COMPUTE`:
-- **3-way skip:** `(weight==0) OR (mask[idx]==0) OR (|act|<threshold[filter])`
-- **Registered pre-computation:** threshold comparison done one cycle ahead (removes abs/compare from critical path — fixed WNS −2.075 ns violation)
-- **2-tap lookahead:** advances counter by 2 when two consecutive taps are skippable
-
-#### `layer_seq_pruned.sv` — MODIFIED
-
-Added to `S_MAC`:
-- Same 3-way skip check as conv
-- **4-tap lookahead** (FC addressing is linear, fits timing budget)
-
-#### `cnn2d_top_pruned.sv` — MODIFIED
-
-New handshake chain:
-```
-pool1_done → mask1_start → [1,352 cycles] → mask1_done → conv2.rstn
-pool2_done → mask2_start → [  400 cycles] → mask2_done →  fc1.rstn
-```
-
-### Timing Fix — Critical Path Resolution
-
-The threshold pre-computation originally included an `abs()` operation (conditional negate) which pushed the critical path to WNS = −2.075 ns.
-
-**Fix:** Since Conv2 and FC1 inputs are post-ReLU (always ≥ 0), `abs()` is mathematically unnecessary. Removing it reduced logic depth by ~3 ns, restoring WNS > 0.
-
-```systemverilog
-// BEFORE (wrong — causes timing violation):
-precomp_below <= ($signed(act) < 0 ? -$signed(act) : $signed(act)) < threshold;
-
-// AFTER (correct — post-ReLU inputs are always ≥ 0):
-precomp_below <= $signed(act) < $signed(threshold);
-```
-
-### Resource Overhead of Pruning
-
-| Resource | Baseline TTQ | Added by Pruning | Total | % of Device |
-|---|:---:|:---:|:---:|:---:|
-| LUTs | ~4,200 | +385 | ~4,585 | 8.62% |
-| FFs | ~2,800 | +140 | ~2,940 | 2.76% |
-| DSPs | 8 | 0 | 8 | 3.6% |
-| BRAMs | 4 | 0 | 4 | 2.9% |
-
-### Activation Histograms
-
-![Activation Histograms](cnn_act_prune/analysis_plots/activation_histograms_all.png)
-
-![DAAP Tradeoff](cnn_act_prune/analysis_plots/daap_tradeoff.png)
-
-![Pruning Summary](cnn_act_prune/analysis_plots/pruning_summary.png)
+| | |
+|---|---|
+| ![Hysteresis Utilization](cnn_act_prune/hardware_with_hysteresis/images/utilization.png) | ![Hysteresis Timing](cnn_act_prune/hardware_with_hysteresis/images/timing.png) |
+| ![Hysteresis Power](cnn_act_prune/hardware_with_hysteresis/images/power.png) | ![Hysteresis Simulation](cnn_act_prune/hardware_with_hysteresis/images/simulation.png) |
 
 ---
 
@@ -463,125 +281,48 @@ precomp_below <= $signed(act) < $signed(threshold);
 
 ```
 Bit 31                Bit 16  Bit 15                Bit 0
-  │                      │       │                      │
   S  IIIIIIIIIIIIIIII  .  FFFFFFFFFFFFFFFF
-  │        │                       │
  sign  integer (16b)         fractional (16b)
 
 Range:      −32768.0  to  +32767.99998
 Resolution: 1/65536  ≈  0.0000153
-Example:    1.0  →  0x00010000  (= 65536 decimal)
-
-Multiply:   64-bit product  →  >>> 16  →  back to Q16.16
-```
-
-All weight `.mem` files store one 32-bit hex value per line (two's complement for negatives).
-
----
-
-## Running the Software
-
-### Prerequisites
-```bash
-cd /home/arvind/FPGA_NN-main
-source .venv/bin/activate  # Python 3.10+, PyTorch, torchvision, numpy
-```
-
-### Train Baseline 2D CNN
-```bash
-python python_files/cnn2d_model.py
-# Output: python_files/cnn2d_mnist_model.pth  (98.35%)
-# Weight .mem files → cnn2d_weights/
-```
-
-### Train TTQ+BN Model
-```bash
-python cnn_2d_new/software/cnn2d_ttq_bn_model.py
-# Output: cnn_2d_new/software/cnn2d_ttq_bn_mnist_model.pth  (97.28%)
-# Weight .mem files → cnn_2d_new/weights/
-```
-
-### DAAP Analysis + Threshold Export
-```bash
-# Step 1: Full activation analysis + DAAP sweep
-python cnn_act_prune/software/cnn2d_ttq_analysis.py
-
-# Step 2: Export threshold .mem files
-python cnn_act_prune/software/export_pruned_thresholds.py \
-    --tau_base 0.30 --kl 0.25 --kh 0.70 \
-    --outdir cnn_act_prune/weights/
-```
-
-### Measure All 4 Pruning Configs (Actual Accuracy)
-```bash
-python cnn_act_prune/software/test_combined_pruning.py
-# Evaluates all configs on 10K test set, prints final table
+Multiply:   64-bit product  >>>  16  →  back to Q16.16
 ```
 
 ---
 
 ## Running Hardware Simulation (Vivado)
 
-### Baseline 2D CNN
-1. Add sources: `verilog_files/*.sv`
+### Baseline Sequential
+1. Add sources: `cnn2d_baseline/hardware_sequential/*.sv`
+2. Set simulation dir to `cnn2d_weights/`
+3. Top module: `tb_cnn2d` → expect `DETECTED DIGIT: 9`, `RESULT: PASS`
+
+### Baseline Parallel
+1. Add sources: `cnn2d_baseline/hardware_parallel/*.sv`
 2. Set simulation dir to `cnn2d_weights/`
 3. Top module: `tb_cnn2d`
-4. Run simulation → expect `DETECTED DIGIT: 7`, `RESULT: PASS`
 
 ### TTQ+BN
 1. Add sources: `cnn_2d_new/hardware_ttq/*.sv`
 2. Set simulation dir to `cnn_2d_new/weights/`
 3. Top module: `tb_cnn2d_ttq`
 
-### Threshold Pruned (4b-T)
+### Threshold Pruned
 1. Add sources: `cnn_act_prune/hardware/*.sv`
 2. Set simulation dir to `cnn_act_prune/weights/`
 3. Top module: `tb_cnn2d_pruned`
 
-### Combined Pruned (4b-H)
+### Hysteresis + Threshold
 1. Add sources: `cnn_act_prune/hardware_with_hysteresis/*.sv`
 2. Set simulation dir to `cnn_act_prune/weights/`
 3. Top module: `tb_cnn2d_pruned`
 
 ---
 
-## Why the Large MLP Fails Synthesis
-
-The 784→256→128→64→10 MLP requires **458 DSP48E1 slices** for the 784→256 first layer alone (each neuron needs 784 multipliers simultaneously). The Zynq-7020 only has 220. The design can be simulated but not placed-and-routed.
-
-This is the core motivation for convolutional architectures: **weight sharing** means a single 3×3 kernel (9 multipliers) is reused across all spatial positions, collapsing the DSP count from hundreds to single digits with TTQ.
-
----
-
-## BRAM vs LUTRAM Study
-
-`bram_vs_lutram/` contains a standalone comparison of FC layer implementations using:
-- **Block RAM (BRAM):** Synchronous read, 2-cycle latency, large capacity
-- **Distributed RAM (LUTRAM):** Asynchronous read, 1-cycle latency, uses LUT fabric
-
-Key finding: LUTRAM is preferred for small weight memories (< 2K entries) because it avoids the 2-cycle read latency of BRAM and the timing closure is simpler. BRAM is used for FC1 weights in the TTQ model (6,400+ entries).
-
-**BRAM Implementation:**
-
-| | |
-|---|---|
-| ![BRAM Schematic — synchronous read port showing 2-cycle latency path](bram_vs_lutram/images/bram/schematic.jpeg) | ![BRAM Utilization — BRAM36 primitives used for weight storage](bram_vs_lutram/images/bram/utilization.jpeg) |
-| ![BRAM Timing — setup slack with synchronous read adding pipeline delay](bram_vs_lutram/images/bram/timing.jpeg) | ![BRAM Waveform — 2-cycle read latency visible in XSim output](bram_vs_lutram/images/bram/waveform.jpeg) |
-| ![BRAM Power — static BRAM power contribution](bram_vs_lutram/images/bram/power.jpeg) | |
-
-**LUTRAM Implementation:**
-
-| | |
-|---|---|
-| ![LUTRAM Schematic — distributed RAM using LUT6 primitives with async read](bram_vs_lutram/images/lutram/schematic.jpeg) | ![LUTRAM Utilization — LUT usage increase vs BRAM baseline](bram_vs_lutram/images/lutram/utilization.jpeg) |
-| ![LUTRAM Timing — improved slack from single-cycle combinational read](bram_vs_lutram/images/lutram/timing.jpeg) | ![LUTRAM Waveform — 1-cycle read latency confirming async access](bram_vs_lutram/images/lutram/waveform.jpeg) |
-| ![LUTRAM Power — dynamic power from LUT fabric toggling](bram_vs_lutram/images/lutram/power.jpeg) | |
-
----
-
 ## Key References
 
 1. Zhu, C. et al. "Trained Ternary Quantization." ICLR 2017.
-2. Canny, J. "A Computational Approach to Edge Detection." IEEE TPAMI 1986. (Hysteresis concept)
+2. Canny, J. "A Computational Approach to Edge Detection." IEEE TPAMI 1986.
 3. Zynq-7020 Product Specification, AMD/Xilinx UG585.
 4. Li, F. & Liu, B. "Ternary Weight Networks." arXiv 2016.
